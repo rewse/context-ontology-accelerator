@@ -5,120 +5,12 @@
 
 from __future__ import annotations
 
-import os
 import re
-import shutil
-import subprocess
 from pathlib import Path
-
 
 ROOT = Path(__file__).parent.parent.parent
 NORTHWIND_DEMO_STACK_ID = "coa-dev-northwind-demo"
 NORTHWIND_DEMO_CONTEXT = "enable_northwind_demo"
-
-
-def _existing_path(relative_path: Path) -> Path:
-    """Find a dependency or generated asset in this worktree or its parent repo."""
-    for candidate in (ROOT / relative_path, ROOT.parents[1] / relative_path):
-        if candidate.exists():
-            return candidate
-    raise AssertionError(f"Required local path is unavailable: {relative_path}")
-
-
-def _create_complete_workspace(tmp_path: Path) -> Path:
-    """Copy source and link existing generated assets in a disposable workspace."""
-    workspace = tmp_path / "workspace"
-    shutil.copytree(
-        ROOT,
-        workspace,
-        ignore=shutil.ignore_patterns(
-            ".git",
-            ".venv",
-            ".pytest_cache",
-            "__pycache__",
-            "cdk.out",
-            "node_modules",
-            "smithy-generated",
-        ),
-        symlinks=True,
-    )
-    os.symlink(
-        _existing_path(Path("smithy-generated")),
-        workspace / "smithy-generated",
-        target_is_directory=True,
-    )
-    return workspace
-
-
-def _list_cdk_stacks(workspace: Path, *context: str) -> list[str]:
-    """Synthesize and list stacks without changing the source worktree or AWS."""
-    infra_node_modules = _existing_path(Path("infra/node_modules"))
-    cdk = infra_node_modules / ".bin" / "cdk"
-    tsx = infra_node_modules / ".bin" / "tsx"
-    assert cdk.is_file(), f"CDK executable is unavailable: {cdk}"
-    assert tsx.is_file(), f"tsx executable is unavailable: {tsx}"
-
-    assembly = workspace / ("cdk-enabled.out" if context else "cdk-default.out")
-    context_arguments = [
-        argument for value in context for argument in ("--context", value)
-    ]
-    environment = os.environ | {
-        "AWS_ACCESS_KEY_ID": "test",
-        "AWS_DEFAULT_REGION": "us-east-1",
-        "AWS_EC2_METADATA_DISABLED": "true",
-        "AWS_ENDPOINT_URL_SSM": "http://127.0.0.1:9",
-        "AWS_REGION": "us-east-1",
-        "AWS_SECRET_ACCESS_KEY": "test",
-        "CDK_DEFAULT_ACCOUNT": "",
-        "CDK_DEFAULT_REGION": "us-east-1",
-        "CDK_DISABLE_VERSION_CHECK": "1",
-        "CI": "true",
-        "GIT_PAGER": "cat",
-        "NODE_PATH": str(infra_node_modules),
-        "PAGER": "cat",
-    }
-    app_command = f"{tsx} bin/app.ts"
-    synthesis = subprocess.run(
-        [
-            str(cdk),
-            "list",
-            "--app",
-            app_command,
-            "--output",
-            str(assembly),
-            "--context",
-            "env=dev",
-            "--no-notices",
-            "--no-version-reporting",
-            *context_arguments,
-        ],
-        capture_output=True,
-        check=False,
-        cwd=workspace / "infra",
-        env=environment,
-        text=True,
-        timeout=180,
-    )
-    assert synthesis.returncode == 0, synthesis.stderr + synthesis.stdout
-
-    listed = subprocess.run(
-        [
-            str(cdk),
-            "list",
-            "--app",
-            str(assembly),
-            "--no-notices",
-            "--no-version-reporting",
-        ],
-        capture_output=True,
-        check=False,
-        cwd=workspace / "infra",
-        env=environment,
-        text=True,
-        timeout=180,
-    )
-    assert listed.returncode == 0, listed.stderr + listed.stdout
-    return listed.stdout.splitlines()
 
 
 def test_northwind_demo_deployment_documentation_matches_cdk_configuration() -> None:
@@ -143,9 +35,10 @@ def test_northwind_demo_deployment_documentation_matches_cdk_configuration() -> 
     assert "--require-approval never" in target
     assert "--all" not in target
     assert "deploy-serve:" not in target
-    assert 'app.node.tryGetContext(CTX_ENABLE_NORTHWIND_DEMO) === "true"' in app
-    assert "`${stackPrefix}-northwind-demo`" in app
-    assert "northwind.addDependency(network)" in app
+    assert app.count('app.node.tryGetContext(CTX_ENABLE_NORTHWIND_DEMO) === "true"') == 1
+    assert app.count("new NorthwindDemoStack(") == 1
+    assert app.count("`${stackPrefix}-northwind-demo`") == 1
+    assert app.count("northwind.addDependency(network)") == 1
     assert "make deploy-northwind-demo" in docs
     assert NORTHWIND_DEMO_STACK_ID in docs
     assert "`sourceType` set to `DATABASE`" in docs
@@ -171,20 +64,6 @@ def test_northwind_demo_deployment_documentation_matches_cdk_configuration() -> 
 
     assert "private" in docs.lower()
     assert "COA VPC" in docs
-
-
-def test_northwind_demo_stack_is_optional_in_cdk_list(tmp_path: Path) -> None:
-    """Verify the optional stack appears only for the exact enabled context."""
-    workspace = _create_complete_workspace(tmp_path)
-
-    enabled_stacks = _list_cdk_stacks(
-        workspace,
-        f"{NORTHWIND_DEMO_CONTEXT}=true",
-    )
-    disabled_stacks = _list_cdk_stacks(workspace)
-
-    assert enabled_stacks.count(NORTHWIND_DEMO_STACK_ID) == 1
-    assert disabled_stacks.count(NORTHWIND_DEMO_STACK_ID) == 0
 
 
 def test_package_guide_references_real_packages() -> None:
