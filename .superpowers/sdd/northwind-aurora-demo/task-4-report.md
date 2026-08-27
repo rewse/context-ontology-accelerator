@@ -3,6 +3,7 @@
 ## Commits
 
 - Implementation: `b02f3b1`
+- Review fix round 1: `3eb2f7b`
 
 ## Changed files
 
@@ -37,3 +38,17 @@ The mandated `uv run pytest tests/unit/test_documentation_accuracy.py -q` comman
 ## Risks and follow-up
 
 The clean worktree lacks the generated OpenAPI assets and has missing workspace packages, so ordinary `pnpm` and `uv run` validation cannot start without the documented fallback. No dependency files or generated workspace files were changed. No AWS deployment was performed; live database and source-registration verification remain Task 6 work.
+
+## Review fix round 1
+
+- The Make target test now matches a non-indented `deploy-northwind-demo:` line and consumes only following recipe lines, so it stops before the next target.
+- The documentation test extracts the optional Northwind section and compares the complete ordered CloudFormation-output to source-field table pairs.
+- A pytest CDK regression test copies the source into a temporary workspace, links the existing generated assets there, synthesizes enabled and default contexts, and counts exact stack-ID lines from `cdk list`. It expects one `coa-dev-northwind-demo` entry when `enable_northwind_demo=true` and zero by default.
+- The CDK subprocess uses disposable output directories, disables pagers and metadata credentials, and sends the app's SSM lookup to a loopback endpoint. It performs no AWS writes and does not modify the source worktree or generated assets.
+
+## Review fix round 1 evidence
+
+- `uv run --no-project --with pytest pytest tests/unit/test_documentation_accuracy.py -q` passed: 8 passed. Pytest emitted one existing `asyncio_mode` configuration warning.
+- `make -n deploy-northwind-demo` printed only the expected single-stack deployment command.
+- `/Users/shibtats/git/context-ontology-accelerator/infra/node_modules/.bin/prettier --check infra/bin/app.ts infra/lib/constants.ts` passed.
+- `git diff --check` passed before the review-fix commit.
