@@ -117,10 +117,10 @@ def test_changed_hash_reset_drops_all_tables_from_schema_asset(
     handler._reset_seed_tables(_config(handler), "transaction-1")
 
     reset_sql = handler._rds.execute_statement.call_args.kwargs["sql"]
-    dropped_tables = reset_sql.removeprefix("DROP TABLE IF EXISTS ").removesuffix(" CASCADE")
+    dropped_tables = reset_sql.removeprefix("DROP TABLE IF EXISTS ")
     assert dropped_tables.split(", ") == [*expected_tables, "seed_metadata"]
-    assert reset_sql.startswith("DROP TABLE IF EXISTS ")
-    assert reset_sql.endswith(" CASCADE")
+    assert reset_sql == f"DROP TABLE IF EXISTS {', '.join([*expected_tables, 'seed_metadata'])}"
+    assert "CASCADE" not in reset_sql
 
 
 def test_changed_hash_reset_does_not_selectively_delete_standard_customers(
@@ -151,6 +151,25 @@ def test_changed_hash_failure_after_reset_rolls_back_complete_replacement(
 
     handler._reset_seed_tables.assert_called_once_with(config, "transaction-1")
     handler._create_schema.assert_called_once_with(config, "transaction-1")
+    handler._rds.rollback_transaction.assert_called_once()
+    handler._rds.commit_transaction.assert_not_called()
+
+
+def test_external_dependency_during_reset_rolls_back_without_cascade(
+    handler: ModuleType,
+) -> None:
+    config = _config(handler)
+    handler._applied_seed_hash = MagicMock(return_value="sha256-old")
+    handler._rds.execute_statement.side_effect = RuntimeError("external dependency")
+    handler._create_schema = MagicMock()
+
+    with pytest.raises(RuntimeError, match="external dependency"):
+        handler._apply_seed(config)
+
+    reset_sql = handler._rds.execute_statement.call_args.kwargs["sql"]
+    assert reset_sql.startswith("DROP TABLE IF EXISTS ")
+    assert "CASCADE" not in reset_sql
+    handler._create_schema.assert_not_called()
     handler._rds.rollback_transaction.assert_called_once()
     handler._rds.commit_transaction.assert_not_called()
 

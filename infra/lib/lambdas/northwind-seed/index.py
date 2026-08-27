@@ -308,7 +308,7 @@ def _reset_seed_tables(config: SeedConfig, transaction_id: str) -> None:
     table_names = ", ".join(_seed_owned_table_names())
     _execute(
         config,
-        f"DROP TABLE IF EXISTS {table_names} CASCADE",
+        f"DROP TABLE IF EXISTS {table_names}",
         transaction_id=transaction_id,
     )
 
