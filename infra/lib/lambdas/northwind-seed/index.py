@@ -122,7 +122,9 @@ def handler(event: dict[str, Any], context: object = None) -> dict[str, str]:
     """Handle CloudFormation lifecycle events for the Northwind seed."""
     del context
     config = _seed_config(event)
-    physical_resource_id = f"northwind-seed-{config.seed_hash}"
+    physical_resource_id = event.get("PhysicalResourceId") or f"northwind-seed-{config.seed_hash}"
+    if not isinstance(physical_resource_id, str):
+        raise ValueError("PhysicalResourceId must be a string")
     if event.get("RequestType") == "Delete":
         return {"PhysicalResourceId": physical_resource_id}
     if _seed_is_current(config):
@@ -467,18 +469,16 @@ def _base_parameter_set(
     table_name: str,
     values: Sequence[object],
 ) -> list[dict[str, Any]]:
-    return [
-        {
+    parameters: list[dict[str, Any]] = []
+    for index, value in enumerate(values):
+        parameter = {
             "name": f"value_{index}",
-            "value": _parameter_value(
-                _base_parameter_value(table_name, index, value),
-                type_hint=(
-                    "DATE" if value is not None and index in _BASE_DATE_COLUMN_INDEXES.get(table_name, ()) else None
-                ),
-            ),
+            "value": _parameter_value(_base_parameter_value(table_name, index, value)),
         }
-        for index, value in enumerate(values)
-    ]
+        if value is not None and index in _BASE_DATE_COLUMN_INDEXES.get(table_name, ()):
+            parameter["typeHint"] = "DATE"
+        parameters.append(parameter)
+    return parameters
 
 
 def _base_parameter_value(table_name: str, index: int, value: object) -> object:
@@ -554,19 +554,17 @@ def _parameter_set(
     *,
     type_hints: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    return [
-        {
-            "name": name,
-            "value": _parameter_value(
-                value,
-                type_hint=(type_hints or {}).get(name) if value is not None else None,
-            ),
-        }
-        for name, value in row.items()
-    ]
+    parameters: list[dict[str, Any]] = []
+    for name, value in row.items():
+        parameter = {"name": name, "value": _parameter_value(value)}
+        type_hint = (type_hints or {}).get(name) if value is not None else None
+        if type_hint:
+            parameter["typeHint"] = type_hint
+        parameters.append(parameter)
+    return parameters
 
 
-def _parameter_value(value: object, *, type_hint: str | None = None) -> dict[str, object]:
+def _parameter_value(value: object) -> dict[str, object]:
     if value is None:
         return {"isNull": True}
     if isinstance(value, bool):
@@ -576,12 +574,9 @@ def _parameter_value(value: object, *, type_hint: str | None = None) -> dict[str
     if isinstance(value, float):
         return {"doubleValue": value}
     if isinstance(value, Decimal):
-        return {"stringValue": str(value), "typeHint": "DECIMAL"}
+        return {"stringValue": str(value)}
     if isinstance(value, str):
-        result: dict[str, object] = {"stringValue": value}
-        if type_hint:
-            result["typeHint"] = type_hint
-        return result
+        return {"stringValue": value}
     if isinstance(value, (bytes, bytearray)):
         return {"blobValue": bytes(value)}
     raise TypeError(f"Unsupported RDS Data API parameter type: {type(value).__name__}")

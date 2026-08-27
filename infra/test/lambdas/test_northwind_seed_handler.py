@@ -185,9 +185,11 @@ def test_external_dependency_during_reset_rolls_back_without_cascade(
 
 
 def test_delete_is_no_op(handler: ModuleType) -> None:
-    result = handler.handler(_event("Delete"))
+    event = _event("Delete")
+    event["PhysicalResourceId"] = "cloudformation-assigned-id"
+    result = handler.handler(event)
 
-    assert result["PhysicalResourceId"] == "northwind-seed-sha256-test"
+    assert result["PhysicalResourceId"] == "cloudformation-assigned-id"
     handler._rds.begin_transaction.assert_not_called()
     handler._rds.execute_statement.assert_not_called()
 
@@ -373,7 +375,8 @@ def test_actual_base_asset_preserves_representative_parameter_types(
     order_detail_values = [
         parameter["value"] for parameter in handler._base_parameter_set("order_details", order_detail)
     ]
-    employee_values = [parameter["value"] for parameter in handler._base_parameter_set("employees", employee)]
+    employee_parameters = handler._base_parameter_set("employees", employee)
+    employee_values = [parameter["value"] for parameter in employee_parameters]
 
     assert category_values == [
         {"longValue": 1},
@@ -392,8 +395,10 @@ def test_actual_base_asset_preserves_representative_parameter_types(
     ]
     assert employee_values[7] == {"stringValue": r"507 - 20th Ave. E.\nApt. 2A"}
     assert employee_values[14] == {"blobValue": b""}
-    assert employee_values[5] == {"stringValue": "1948-12-08", "typeHint": "DATE"}
-    assert employee_values[6] == {"stringValue": "1992-05-01", "typeHint": "DATE"}
+    assert employee_values[5] == {"stringValue": "1948-12-08"}
+    assert employee_values[6] == {"stringValue": "1992-05-01"}
+    assert employee_parameters[5]["typeHint"] == "DATE"
+    assert employee_parameters[6]["typeHint"] == "DATE"
 
 
 def test_insert_parser_handles_commas_quotes_and_newlines(handler: ModuleType) -> None:
@@ -484,11 +489,12 @@ def test_generated_rows_use_column_specific_typed_parameter_sets(handler: Module
         "units_in_stock",
         "units_on_order",
     }
-    order_values = {parameter["name"]: parameter["value"] for parameter in order_parameters[0]}
+    order_parameter_map = {parameter["name"]: parameter for parameter in order_parameters[0]}
+    order_values = {name: parameter["value"] for name, parameter in order_parameter_map.items()}
     assert order_values["order_id"].get("longValue")
     assert order_values["freight"].get("doubleValue")
-    assert order_values["order_date"]["typeHint"] == "DATE"
-    assert order_values["required_date"]["typeHint"] == "DATE"
+    assert order_parameter_map["order_date"]["typeHint"] == "DATE"
+    assert order_parameter_map["required_date"]["typeHint"] == "DATE"
     assert order_values["shipped_date"] == {"isNull": True} or "stringValue" in order_values["shipped_date"]
     if "stringValue" in order_values["shipped_date"]:
-        assert order_values["shipped_date"]["typeHint"] == "DATE"
+        assert order_parameter_map["shipped_date"]["typeHint"] == "DATE"
