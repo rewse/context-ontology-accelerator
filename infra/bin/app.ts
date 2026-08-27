@@ -7,10 +7,11 @@ import * as cdk from "aws-cdk-lib";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 import type { IAlarmActionStrategy } from "cdk-monitoring-constructs/lib/common/alarm/action";
 import {
-  CTX_RESOURCE_PREFIX,
+  CTX_ENABLE_NORTHWIND_DEMO,
   CTX_ENV,
-  DEFAULT_RESOURCE_PREFIX,
+  CTX_RESOURCE_PREFIX,
   DEFAULT_ENV,
+  DEFAULT_RESOURCE_PREFIX,
 } from "../lib/constants";
 import { Paths } from "../lib/paths";
 import { SsmConfig, CustomDomainConfig, IdpType } from "../lib/types";
@@ -38,6 +39,7 @@ import {
   McpStack,
   MetricServiceStack,
   NamespaceStack,
+  NorthwindDemoStack,
   OntologyStack,
   ServeStack,
   SourcesStack,
@@ -51,6 +53,8 @@ const prefix =
   DEFAULT_RESOURCE_PREFIX;
 const envName = (app.node.tryGetContext(CTX_ENV) as string) ?? DEFAULT_ENV;
 const stackPrefix = `${prefix}-${envName}`;
+const enableNorthwindDemo =
+  app.node.tryGetContext(CTX_ENABLE_NORTHWIND_DEMO) === "true";
 
 /**
  * Read deployment configuration from SSM Parameter Store.
@@ -191,6 +195,14 @@ async function deploy(): Promise<void> {
   const network = new NetworkStack(app, `${stackPrefix}-network`, {
     agentCoreAzNames,
   });
+  if (enableNorthwindDemo) {
+    const northwind = new NorthwindDemoStack(
+      app,
+      `${stackPrefix}-northwind-demo`,
+      { network },
+    );
+    northwind.addDependency(network);
+  }
   const auth = new IdpAuthenticationStack(
     app,
     `${stackPrefix}-auth`,

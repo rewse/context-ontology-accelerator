@@ -9,6 +9,50 @@ import re
 from pathlib import Path
 
 
+ROOT = Path(__file__).parent.parent.parent
+
+
+def test_northwind_demo_deployment_documentation_matches_cdk_configuration() -> None:
+    """Verify the optional Northwind demo command and source mapping stay aligned."""
+    makefile = (ROOT / "Makefile").read_text()
+    constants = (ROOT / "infra" / "lib" / "constants.ts").read_text()
+    app = (ROOT / "infra" / "bin" / "app.ts").read_text()
+    docs = (ROOT / "external-docs" / "content" / "sources.md").read_text()
+
+    stack_id = "coa-dev-northwind-demo"
+    context_key = "enable_northwind_demo"
+    assert "deploy-northwind-demo:" in makefile
+    target = makefile.split("deploy-northwind-demo:", maxsplit=1)[1].split(
+        "\n\n", maxsplit=1
+    )[0]
+
+    assert 'CTX_ENABLE_NORTHWIND_DEMO = "enable_northwind_demo"' in constants
+    assert "pnpm --filter coa-infra exec cdk deploy coa-dev-northwind-demo" in target
+    assert "--context env=dev" in target
+    assert f"--context {context_key}=true" in target
+    assert "--require-approval never" in target
+    assert "--all" not in target
+    assert 'app.node.tryGetContext(CTX_ENABLE_NORTHWIND_DEMO) === "true"' in app
+    assert "`${stackPrefix}-northwind-demo`" in app
+    assert "northwind.addDependency(network)" in app
+    assert "make deploy-northwind-demo" in docs
+    assert stack_id in docs
+    assert "`sourceType` set to `DATABASE`" in docs
+    assert "`engine` set to `POSTGRESQL`" in docs
+
+    for output_name, source_field in (
+        ("NorthwindClusterEndpoint", "host"),
+        ("NorthwindDatabaseName", "databaseName"),
+        ("NorthwindPort", "port"),
+        ("NorthwindSecretArn", "credentialSecretArn"),
+    ):
+        assert output_name in docs
+        assert source_field in docs
+
+    assert "private" in docs.lower()
+    assert "COA VPC" in docs
+
+
 def test_package_guide_references_real_packages() -> None:
     """Verify that package-guide.md references real packages in the monorepo."""
     package_guide = Path(__file__).parent.parent.parent / "external-docs" / "content" / "package-guide.md"

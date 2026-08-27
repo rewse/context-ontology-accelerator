@@ -1,4 +1,4 @@
-.PHONY: setup generate format lint test test-unit test-integ build load-test load-test-slow load-test-teardown deploy-dev deploy-serve destroy-dev preflight docs web-dev vkg-dev version version-check
+.PHONY: setup generate format lint test test-unit test-integ build load-test load-test-slow load-test-teardown deploy-dev deploy-northwind-demo deploy-serve destroy-dev preflight docs web-dev vkg-dev version version-check
 
 setup: generate
 	./scripts/setup-dev.sh
@@ -80,6 +80,12 @@ preflight:
 
 deploy-dev:
 	./scripts/deploy.sh dev
+
+deploy-northwind-demo:
+	AWS_DEFAULT_REGION=us-east-1 AWS_REGION=us-east-1 \
+		pnpm --filter coa-infra exec cdk deploy coa-dev-northwind-demo \
+		--context env=dev --context enable_northwind_demo=true \
+		--require-approval never
 
 deploy-serve:
 	./scripts/deploy-serve.sh dev

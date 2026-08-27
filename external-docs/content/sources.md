@@ -110,6 +110,25 @@ aws secretsmanager create-secret \
     account, see [Cross-Account Data Sources](cross-account-sources.md) for
     secret sharing, cross-account roles, and network setup.
 
+### Optional Northwind Aurora demo
+
+Deploy the private Aurora PostgreSQL demo database with:
+
+```bash
+make deploy-northwind-demo
+```
+
+This deploys `coa-dev-northwind-demo`. Register a source with `sourceType` set to `DATABASE` and `engine` set to `POSTGRESQL`, using these stack outputs:
+
+| CloudFormation output | Database source field |
+|---|---|
+| `NorthwindClusterEndpoint` | `host` |
+| `NorthwindDatabaseName` | `databaseName` |
+| `NorthwindPort` | `port` |
+| `NorthwindSecretArn` | `credentialSecretArn` |
+
+The database is private. Before registration, ensure the COA VPC connector security group can reach the Aurora security group; local direct connections are not supported. The stack output provides the Secret ARN only and never exposes credentials.
+
 ### Register via API
 
 Create via `POST /namespaces/{namespaceId}/sources` with `sourceType: "DATABASE"`
