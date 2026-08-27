@@ -19,8 +19,8 @@ COAのデータソース接続、スキーマスキャン、オントロジー�
 
 ## 運用要件
 
-1. クラスターはscale-to-zero対応のAurora PostgreSQLバージョンを使用する。実装時にus-east-1のサポート状況を確認し、利用するバージョンをコードで固定する。
-2. Serverless v2の最小容量は選択したバージョンが許容する最小値とする。最大容量は実装時にAWS既定値を確認してコードへ固定し、実測値を得た後にCloudWatchのCPUUtilizationとDatabaseConnectionsを基に調整する。
+1. クラスターはus-east-1でscale-to-zeroに対応するAurora PostgreSQL 17.10を使用する。
+2. Serverless v2は最小0 ACU、最大2 ACU、自動停止まで300秒とする。実測値を得た後にCloudWatchのCPUUtilizationとDatabaseConnectionsを基に調整する。
 3. writerは1台とし、readerは作成しない。
 4. バックアップ保持期間を7日とする。
 5. 削除保護を有効にする。廃止時は削除保護を明示的に解除した後、CloudFormation削除時に最終スナップショットを保持する。

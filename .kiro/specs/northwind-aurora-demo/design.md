@@ -22,7 +22,7 @@ flowchart LR
 
 `NorthwindDemoStack`を追加し、NetworkStackをpropsで受け取る。スタックはDB subnet group、Aurora cluster、Serverless v2 writer、接続用security group、生成資格情報のSecret、seed custom resourceを所有する。security groupはNetworkStackのconnector security groupからのTCP 5432だけを受け入れる。クラスターとインスタンスはprivate subnetに置き、publicly accessibleを無効にする。
 
-クラスターではAWS管理キーによるストレージ暗号化、IAMデータベース認証、Data API、Performance Insights、PostgreSQLログ出力を有効にする。バックアップは7日保持し、削除保護を有効にする。CloudFormationのremoval policyはsnapshotとする。意図的に廃止するときは削除保護を別の変更で解除してからstackを削除し、最終スナップショットを残す。Serverless v2の最小容量にはscale-to-zero対応バージョンが許容する最小値を使う。最大容量は実装時にAWS既定値を確認してコードへ固定する。CPUUtilizationとDatabaseConnectionsの実測値が集まるまでは上限を独自に狭めない。
+クラスターではAurora PostgreSQL 17.10を使い、AWS管理キーによるストレージ暗号化、IAMデータベース認証、Data API、Performance Insights、PostgreSQLログ出力を有効にする。バックアップは7日保持し、削除保護を有効にする。CloudFormationのremoval policyはsnapshotとする。意図的に廃止するときは削除保護を別の変更で解除してからstackを削除し、最終スナップショットを残す。Serverless v2は最小0 ACU、最大2 ACU、自動停止まで300秒とする。CPUUtilizationとDatabaseConnectionsの実測値を集めた後、必要に応じて上限を調整する。
 
 ## データモデルと生成量
 
