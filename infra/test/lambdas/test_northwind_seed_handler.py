@@ -3,22 +3,18 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
+import re
 import sys
+from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock
 
-from botocore.exceptions import ClientError
 import pytest
+from botocore.exceptions import ClientError
 
-
-_HANDLER_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "lib"
-    / "lambdas"
-    / "northwind-seed"
-    / "index.py"
-)
+_HANDLER_PATH = Path(__file__).resolve().parents[2] / "lib" / "lambdas" / "northwind-seed" / "index.py"
+_ASSETS_PATH = _HANDLER_PATH.parent / "assets"
+_CREATE_TABLE_PATTERN = re.compile(r"^CREATE TABLE ([a-z_]+) ", re.MULTILINE)
 
 
 def _event(request_type: str, seed_hash: str = "sha256-test") -> dict[str, object]:
@@ -90,26 +86,73 @@ def test_same_hash_update_skips_reseed(handler: ModuleType) -> None:
     handler._rds.batch_execute_statement.assert_not_called()
 
 
-def test_changed_hash_update_clears_seed_owned_rows_before_reloading(
+def test_changed_hash_reruns_schema_base_and_generated_phases(
     handler: ModuleType,
 ) -> None:
+    config = _config(handler)
     handler._applied_seed_hash = MagicMock(return_value="sha256-old")
+    handler._reset_seed_tables = MagicMock()
+    handler._run_sql_script = MagicMock()
+    handler._load_generated_data = MagicMock()
+    handler._record_seed_hash = MagicMock()
 
-    handler.handler(_event("Update"))
+    handler._apply_seed(config)
 
-    executed_sql = [call.kwargs["sql"] for call in handler._rds.execute_statement.call_args_list]
-    clear_order = [
-        sql
-        for sql in executed_sql
-        if sql.startswith("DELETE FROM")
+    transaction_id = "transaction-1"
+    handler._reset_seed_tables.assert_called_once_with(config, transaction_id)
+    assert handler._run_sql_script.call_args_list == [
+        ((config, "schema.sql", transaction_id),),
+        ((config, "base-data.sql", transaction_id),),
     ]
-    assert clear_order == [
-        "DELETE FROM order_details WHERE order_id >= 11078",
-        "DELETE FROM orders WHERE order_id >= 11078",
-        "DELETE FROM products WHERE product_id >= 78",
-        "DELETE FROM customers WHERE customer_id LIKE 'S%'",
-    ]
+    handler._load_generated_data.assert_called_once_with(config, transaction_id)
+    handler._record_seed_hash.assert_called_once_with(config, transaction_id)
     handler._rds.commit_transaction.assert_called_once()
+
+
+def test_changed_hash_reset_drops_all_tables_from_schema_asset(
+    handler: ModuleType,
+) -> None:
+    expected_tables = _CREATE_TABLE_PATTERN.findall((_ASSETS_PATH / "schema.sql").read_text())
+
+    handler._reset_seed_tables(_config(handler), "transaction-1")
+
+    reset_sql = handler._rds.execute_statement.call_args.kwargs["sql"]
+    dropped_tables = reset_sql.removeprefix("DROP TABLE IF EXISTS ").removesuffix(" CASCADE")
+    assert dropped_tables.split(", ") == [*expected_tables, "seed_metadata"]
+    assert reset_sql.startswith("DROP TABLE IF EXISTS ")
+    assert reset_sql.endswith(" CASCADE")
+
+
+def test_changed_hash_reset_does_not_selectively_delete_standard_customers(
+    handler: ModuleType,
+) -> None:
+    base_data = (_ASSETS_PATH / "base-data.sql").read_text()
+
+    handler._reset_seed_tables(_config(handler), "transaction-1")
+
+    reset_sql = handler._rds.execute_statement.call_args.kwargs["sql"]
+    assert "INSERT INTO customers VALUES ('SANTG'" in base_data
+    assert "DELETE FROM customers" not in reset_sql
+    assert "LIKE 'S%'" not in reset_sql
+    assert "customers" in reset_sql
+
+
+def test_changed_hash_failure_after_reset_rolls_back_complete_replacement(
+    handler: ModuleType,
+) -> None:
+    config = _config(handler)
+    handler._applied_seed_hash = MagicMock(return_value="sha256-old")
+    handler._reset_seed_tables = MagicMock()
+    handler._create_schema = MagicMock()
+    handler._load_base_data = MagicMock(side_effect=RuntimeError("base load failed"))
+
+    with pytest.raises(RuntimeError, match="base load failed"):
+        handler._apply_seed(config)
+
+    handler._reset_seed_tables.assert_called_once_with(config, "transaction-1")
+    handler._create_schema.assert_called_once_with(config, "transaction-1")
+    handler._rds.rollback_transaction.assert_called_once()
+    handler._rds.commit_transaction.assert_not_called()
 
 
 def test_delete_is_no_op(handler: ModuleType) -> None:
@@ -159,9 +202,7 @@ def test_transient_resume_error_is_retried(handler: ModuleType) -> None:
         "ServiceUnavailableError",
     ],
 )
-def test_transient_error_stops_after_five_attempts(
-    handler: ModuleType, code: str
-) -> None:
+def test_transient_error_stops_after_five_attempts(handler: ModuleType, code: str) -> None:
     handler._rds.execute_statement.side_effect = _client_error(code)
 
     with pytest.raises(ClientError):
@@ -249,9 +290,7 @@ def test_generated_row_parameter_conversion_preserves_types(
 
 
 def test_generated_rows_use_column_specific_typed_parameter_sets(handler: ModuleType) -> None:
-    rows = handler._generator.generate_top_up(
-        handler._generator.SEED, handler._generator.DEFAULT_TARGETS
-    )
+    rows = handler._generator.generate_top_up(handler._generator.SEED, handler._generator.DEFAULT_TARGETS)
 
     product_parameters = handler._generated_parameter_sets("products", rows.products[:1])
     order_parameters = handler._generated_parameter_sets("orders", rows.orders[:1])
@@ -272,6 +311,4 @@ def test_generated_rows_use_column_specific_typed_parameter_sets(handler: Module
     order_values = {parameter["name"]: parameter["value"] for parameter in order_parameters[0]}
     assert order_values["order_id"].get("longValue")
     assert order_values["freight"].get("doubleValue")
-    assert order_values["shipped_date"] == {"isNull": True} or "stringValue" in order_values[
-        "shipped_date"
-    ]
+    assert order_values["shipped_date"] == {"isNull": True} or "stringValue" in order_values["shipped_date"]

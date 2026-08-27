@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
+import re
+import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-import json
 from pathlib import Path
-import re
-import time
 from typing import Any
 
 import boto3
-from botocore.exceptions import ClientError
-
 import generator as _generator
-
+from botocore.exceptions import ClientError
 
 ASSETS_PATH = Path(__file__).parent / "assets"
 MAX_BATCH_PARAMETER_SETS = 500
@@ -31,6 +30,7 @@ TRANSIENT_CODES = frozenset(
 
 _rds = boto3.client("rds-data")
 _sleep = time.sleep
+_CREATE_TABLE_PATTERN = re.compile(r"^CREATE TABLE ([a-z_]+) ", re.MULTILINE)
 
 _TABLE_COLUMNS = {
     "customers": (
@@ -128,11 +128,10 @@ def _apply_seed(config: SeedConfig) -> None:
     current_hash = _applied_seed_hash(config)
     transaction_id = _begin_transaction(config)
     try:
-        if current_hash is None:
-            _create_schema(config, transaction_id)
-            _load_base_data(config, transaction_id)
-        else:
-            _clear_seed_owned_data(config, transaction_id)
+        if current_hash is not None:
+            _reset_seed_tables(config, transaction_id)
+        _create_schema(config, transaction_id)
+        _load_base_data(config, transaction_id)
         _load_generated_data(config, transaction_id)
         _record_seed_hash(config, transaction_id)
         _commit_transaction(config, transaction_id)
@@ -198,7 +197,8 @@ def _commit_transaction(config: SeedConfig, transaction_id: str) -> None:
 
 
 def _rollback_transaction(config: SeedConfig, transaction_id: str) -> None:
-    try:
+    # The original seed failure remains the useful CloudFormation error.
+    with contextlib.suppress(Exception):
         _call_with_retry(
             lambda: _rds.rollback_transaction(
                 resourceArn=config.cluster_arn,
@@ -206,14 +206,9 @@ def _rollback_transaction(config: SeedConfig, transaction_id: str) -> None:
                 transactionId=transaction_id,
             )
         )
-    except Exception:
-        # The original seed failure remains the useful CloudFormation error.
-        pass
 
 
-def _execute(
-    config: SeedConfig, sql: str, *, transaction_id: str | None = None
-) -> dict[str, Any]:
+def _execute(config: SeedConfig, sql: str, *, transaction_id: str | None = None) -> dict[str, Any]:
     if len(sql.encode("utf-8")) >= MAX_SQL_BYTES:
         raise ValueError("SQL statement exceeds the RDS Data API SQL size limit")
     request: dict[str, Any] = {
@@ -309,14 +304,21 @@ def _run_sql_script(config: SeedConfig, asset_name: str, transaction_id: str) ->
         _execute(config, statement, transaction_id=transaction_id)
 
 
-def _clear_seed_owned_data(config: SeedConfig, transaction_id: str) -> None:
-    for statement in (
-        "DELETE FROM order_details WHERE order_id >= 11078",
-        "DELETE FROM orders WHERE order_id >= 11078",
-        "DELETE FROM products WHERE product_id >= 78",
-        "DELETE FROM customers WHERE customer_id LIKE 'S%'",
-    ):
-        _execute(config, statement, transaction_id=transaction_id)
+def _reset_seed_tables(config: SeedConfig, transaction_id: str) -> None:
+    table_names = ", ".join(_seed_owned_table_names())
+    _execute(
+        config,
+        f"DROP TABLE IF EXISTS {table_names} CASCADE",
+        transaction_id=transaction_id,
+    )
+
+
+def _seed_owned_table_names() -> tuple[str, ...]:
+    schema = (ASSETS_PATH / "schema.sql").read_text()
+    table_names = _CREATE_TABLE_PATTERN.findall(schema)
+    if not table_names:
+        raise RuntimeError("Northwind schema does not define any tables")
+    return (*table_names, "seed_metadata")
 
 
 def _load_generated_data(config: SeedConfig, transaction_id: str) -> None:
@@ -329,8 +331,7 @@ def _load_generated_data(config: SeedConfig, transaction_id: str) -> None:
     ):
         columns = _TABLE_COLUMNS[table_name]
         sql = (
-            f"INSERT INTO {table_name} ({', '.join(columns)}) "
-            f"VALUES ({', '.join(f':{column}' for column in columns)})"
+            f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(f':{column}' for column in columns)})"
         )
         _batch(
             config,
@@ -340,9 +341,7 @@ def _load_generated_data(config: SeedConfig, transaction_id: str) -> None:
         )
 
 
-def _generated_parameter_sets(
-    table_name: str, rows: Iterable[dict[str, object]]
-) -> list[list[dict[str, Any]]]:
+def _generated_parameter_sets(table_name: str, rows: Iterable[dict[str, object]]) -> list[list[dict[str, Any]]]:
     columns = _TABLE_COLUMNS[table_name]
     return [_parameter_set({column: row[column] for column in columns}) for row in rows]
 
