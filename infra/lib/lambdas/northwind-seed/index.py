@@ -7,7 +7,7 @@ import contextlib
 import json
 import re
 import time
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -47,6 +47,13 @@ _BASE_FLOAT_COLUMN_INDEXES = {
     "order_details": frozenset({2, 4}),
     "orders": frozenset({7}),
     "products": frozenset({5}),
+}
+_BASE_DATE_COLUMN_INDEXES = {
+    "employees": frozenset({5, 6}),
+    "orders": frozenset({3, 4, 5}),
+}
+_TABLE_DATE_COLUMNS = {
+    "orders": frozenset({"order_date", "required_date", "shipped_date"}),
 }
 
 _TABLE_COLUMNS = {
@@ -463,7 +470,12 @@ def _base_parameter_set(
     return [
         {
             "name": f"value_{index}",
-            "value": _parameter_value(_base_parameter_value(table_name, index, value)),
+            "value": _parameter_value(
+                _base_parameter_value(table_name, index, value),
+                type_hint=(
+                    "DATE" if value is not None and index in _BASE_DATE_COLUMN_INDEXES.get(table_name, ()) else None
+                ),
+            ),
         }
         for index, value in enumerate(values)
     ]
@@ -527,14 +539,34 @@ def _load_generated_data(config: SeedConfig, transaction_id: str) -> None:
 
 def _generated_parameter_sets(table_name: str, rows: Iterable[dict[str, object]]) -> list[list[dict[str, Any]]]:
     columns = _TABLE_COLUMNS[table_name]
-    return [_parameter_set({column: row[column] for column in columns}) for row in rows]
+    date_columns = _TABLE_DATE_COLUMNS.get(table_name, ())
+    return [
+        _parameter_set(
+            {column: row[column] for column in columns},
+            type_hints={column: "DATE" for column in date_columns},
+        )
+        for row in rows
+    ]
 
 
-def _parameter_set(row: dict[str, object]) -> list[dict[str, Any]]:
-    return [{"name": name, "value": _parameter_value(value)} for name, value in row.items()]
+def _parameter_set(
+    row: dict[str, object],
+    *,
+    type_hints: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": name,
+            "value": _parameter_value(
+                value,
+                type_hint=(type_hints or {}).get(name) if value is not None else None,
+            ),
+        }
+        for name, value in row.items()
+    ]
 
 
-def _parameter_value(value: object) -> dict[str, object]:
+def _parameter_value(value: object, *, type_hint: str | None = None) -> dict[str, object]:
     if value is None:
         return {"isNull": True}
     if isinstance(value, bool):
@@ -546,7 +578,10 @@ def _parameter_value(value: object) -> dict[str, object]:
     if isinstance(value, Decimal):
         return {"stringValue": str(value), "typeHint": "DECIMAL"}
     if isinstance(value, str):
-        return {"stringValue": value}
+        result: dict[str, object] = {"stringValue": value}
+        if type_hint:
+            result["typeHint"] = type_hint
+        return result
     if isinstance(value, (bytes, bytearray)):
         return {"blobValue": bytes(value)}
     raise TypeError(f"Unsupported RDS Data API parameter type: {type(value).__name__}")

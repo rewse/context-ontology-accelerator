@@ -392,6 +392,8 @@ def test_actual_base_asset_preserves_representative_parameter_types(
     ]
     assert employee_values[7] == {"stringValue": r"507 - 20th Ave. E.\nApt. 2A"}
     assert employee_values[14] == {"blobValue": b""}
+    assert employee_values[5] == {"stringValue": "1948-12-08", "typeHint": "DATE"}
+    assert employee_values[6] == {"stringValue": "1992-05-01", "typeHint": "DATE"}
 
 
 def test_insert_parser_handles_commas_quotes_and_newlines(handler: ModuleType) -> None:
@@ -485,4 +487,8 @@ def test_generated_rows_use_column_specific_typed_parameter_sets(handler: Module
     order_values = {parameter["name"]: parameter["value"] for parameter in order_parameters[0]}
     assert order_values["order_id"].get("longValue")
     assert order_values["freight"].get("doubleValue")
+    assert order_values["order_date"]["typeHint"] == "DATE"
+    assert order_values["required_date"]["typeHint"] == "DATE"
     assert order_values["shipped_date"] == {"isNull": True} or "stringValue" in order_values["shipped_date"]
+    if "stringValue" in order_values["shipped_date"]:
+        assert order_values["shipped_date"]["typeHint"] == "DATE"
