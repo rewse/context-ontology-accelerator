@@ -164,7 +164,7 @@ def _seed_is_current(config: SeedConfig) -> bool:
 def _applied_seed_hash(config: SeedConfig) -> str | None:
     table_result = _execute(
         config,
-        "SELECT to_regclass('public.seed_metadata')",
+        "SELECT to_regclass('public.seed_metadata')::text",
     )
     if _first_field(table_result) is None:
         return None

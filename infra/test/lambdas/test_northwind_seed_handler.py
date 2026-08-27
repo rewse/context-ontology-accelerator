@@ -88,6 +88,15 @@ def test_same_hash_update_skips_reseed(handler: ModuleType) -> None:
     handler._rds.batch_execute_statement.assert_not_called()
 
 
+def test_seed_metadata_lookup_casts_regclass_for_data_api(handler: ModuleType) -> None:
+    result = handler._applied_seed_hash(_config(handler))
+
+    assert result is None
+    assert handler._rds.execute_statement.call_args.kwargs["sql"] == (
+        "SELECT to_regclass('public.seed_metadata')::text"
+    )
+
+
 def test_changed_hash_reruns_schema_base_and_generated_phases(
     handler: ModuleType,
 ) -> None:
