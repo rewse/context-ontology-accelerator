@@ -32,7 +32,7 @@ Therefore the expected missing-generator `FileNotFoundError` could not be observ
 
 ## GREEN evidence
 
-The focused tests passed under the Lambda target runtime version from the repository root:
+The initial focused tests passed under the Lambda target runtime version from the repository root:
 
 ```text
 uvx --python 3.12 --from pytest --with boto3 pytest infra/test/lambdas/test_northwind_seed_generator.py -q
@@ -46,6 +46,21 @@ Additional checks passed:
 - `python3 -m py_compile infra/lib/lambdas/northwind-seed/generator.py`
 - Standard data counts: customers=91, products=77, orders=830, order_details=2155.
 - Schema contains 14 primary keys and 13 foreign keys, with dump settings, destructive setup, ownership, and tablespace metadata removed.
+
+## Review fix round 1
+
+`499c70b346a4cc5d2cf10a2735b4da5dfe26d728`: `fix: defer Northwind seed constraints`
+
+- All 13 foreign keys now use `DEFERRABLE INITIALLY DEFERRED`. They keep their existing referenced columns and default `NO ACTION` behavior, while PostgreSQL validates them at transaction commit.
+- The asset-level regression test verifies that the standard data inserts employee 1 before employee 2 and inserts order details before their orders and products. It also requires every foreign key to be initially deferred, so an immediate constraint fails the test.
+- Focused generator tests now check the three annual intervals from 2023-08-28 through 2026-08-27, shipping proportions within one percentage point of 80/15/5, and invalid `TargetCounts` below the standard data or with details but no generated orders.
+
+The review-fix suite passed under Python 3.12:
+
+```text
+uvx --python 3.12 --from pytest --with boto3 pytest infra/test/lambdas/test_northwind_seed_generator.py -q
+13 passed, 1 warning in 0.89s
+```
 
 ## Deviations and risks
 
