@@ -1,18 +1,15 @@
 """Tests for deterministic Northwind synthetic data generation."""
 
-from datetime import date
 import importlib.util
-from pathlib import Path
 import re
 import sys
+from datetime import date
+from pathlib import Path
 from types import ModuleType
 
 import pytest
 
-
-_GENERATOR_PATH = (
-    Path(__file__).resolve().parents[2] / "lib" / "lambdas" / "northwind-seed" / "generator.py"
-)
+_GENERATOR_PATH = Path(__file__).resolve().parents[2] / "lib" / "lambdas" / "northwind-seed" / "generator.py"
 _ASSETS_PATH = _GENERATOR_PATH.parent / "assets"
 
 
@@ -64,10 +61,7 @@ def test_generated_orders_cover_the_three_year_period_and_keep_dates_valid(
     assert min(order_dates) >= date(2023, 8, 28)
     assert max(order_dates) <= date(2026, 8, 27)
     assert all(row["required_date"] > row["order_date"] for row in rows.orders)
-    assert all(
-        row["shipped_date"] is None or row["shipped_date"] >= row["order_date"]
-        for row in rows.orders
-    )
+    assert all(row["shipped_date"] is None or row["shipped_date"] >= row["order_date"] for row in rows.orders)
 
 
 def test_generated_order_dates_are_spread_across_each_year_of_the_period(
@@ -80,10 +74,7 @@ def test_generated_order_dates_are_spread_across_each_year_of_the_period(
         (date(2024, 8, 28), date(2025, 8, 28)),
         (date(2025, 8, 28), date(2026, 8, 28)),
     )
-    period_counts = [
-        sum(start <= order_date < end for order_date in order_dates)
-        for start, end in periods
-    ]
+    period_counts = [sum(start <= order_date < end for order_date in order_dates) for start, end in periods]
 
     assert sum(period_counts) == len(order_dates)
     assert all(0.30 <= count / len(order_dates) <= 0.37 for count in period_counts)
@@ -96,9 +87,7 @@ def test_generated_shipping_states_follow_the_intended_proportions(
     total = len(rows.orders)
     unshipped = sum(row["shipped_date"] is None for row in rows.orders)
     on_time = sum(
-        row["shipped_date"] is not None
-        and row["shipped_date"] <= row["required_date"]
-        for row in rows.orders
+        row["shipped_date"] is not None and row["shipped_date"] <= row["required_date"] for row in rows.orders
     )
     late = total - on_time - unshipped
 
@@ -116,12 +105,8 @@ def test_generated_shipping_states_follow_the_intended_proportions(
         ("products", "products target cannot be lower"),
     ),
 )
-def test_rejects_targets_below_standard_data(
-    generator: ModuleType, targets: str, message: str
-) -> None:
-    counts = {
-        name: generator.BASE_COUNTS[name] for name in generator.BASE_COUNTS
-    }
+def test_rejects_targets_below_standard_data(generator: ModuleType, targets: str, message: str) -> None:
+    counts = {name: generator.BASE_COUNTS[name] for name in generator.BASE_COUNTS}
     counts[targets] -= 1
 
     with pytest.raises(ValueError, match=message):
@@ -146,16 +131,10 @@ def test_schema_defers_foreign_keys_needed_by_base_data_order() -> None:
 
     assert "INSERT INTO employees VALUES (1," in base_data
     assert ", 2," in base_data.split("INSERT INTO employees VALUES (1,", 1)[1].splitlines()[0]
-    assert base_data.index("INSERT INTO order_details VALUES") < base_data.index(
-        "INSERT INTO orders VALUES"
-    )
-    assert base_data.index("INSERT INTO order_details VALUES") < base_data.index(
-        "INSERT INTO products VALUES"
-    )
+    assert base_data.index("INSERT INTO order_details VALUES") < base_data.index("INSERT INTO orders VALUES")
+    assert base_data.index("INSERT INTO order_details VALUES") < base_data.index("INSERT INTO products VALUES")
 
-    foreign_keys = re.findall(
-        r"ADD CONSTRAINT (fk_[a-z_]+) FOREIGN KEY .*?;", schema, flags=re.DOTALL
-    )
+    foreign_keys = re.findall(r"ADD CONSTRAINT (fk_[a-z_]+) FOREIGN KEY .*?;", schema, flags=re.DOTALL)
     assert len(foreign_keys) == 13
     for constraint in foreign_keys:
         pattern = (
@@ -177,6 +156,4 @@ def test_generated_rows_match_northwind_foreign_keys(generator: ModuleType) -> N
     assert all(row["category_id"] in generator.BASE_CATEGORY_IDS for row in rows.products)
     assert all(row["supplier_id"] in generator.BASE_SUPPLIER_IDS for row in rows.products)
     assert detail_order_ids == order_ids
-    assert len({(row["order_id"], row["product_id"]) for row in rows.order_details}) == len(
-        rows.order_details
-    )
+    assert len({(row["order_id"], row["product_id"]) for row in rows.order_details}) == len(rows.order_details)

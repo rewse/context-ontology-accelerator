@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import random
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
-import random
-from typing import Literal, Sequence
-
+from typing import Literal
 
 SEED = 20260827
 BASE_COUNTS = {
@@ -165,20 +165,13 @@ def generate_top_up(seed: int, targets: TargetCounts) -> GeneratedRows:
     """Return reproducible rows that top up Northwind to ``targets``."""
     _validate_targets(targets)
     rng = random.Random(seed)
-    products = tuple(
-        _product(product_id, rng) for product_id in range(78, targets.products + 1)
-    )
-    customers = tuple(
-        _customer(index, rng)
-        for index in range(1, targets.customers - BASE_COUNTS["customers"] + 1)
-    )
+    products = tuple(_product(product_id, rng) for product_id in range(78, targets.products + 1))
+    customers = tuple(_customer(index, rng) for index in range(1, targets.customers - BASE_COUNTS["customers"] + 1))
     order_count = targets.orders - BASE_COUNTS["orders"]
     delivery_statuses = _delivery_statuses(order_count, rng)
     orders = tuple(
         _order(order_id, rng, customers, delivery_status)
-        for order_id, delivery_status in zip(
-            range(11_078, 11_078 + order_count), delivery_statuses, strict=True
-        )
+        for order_id, delivery_status in zip(range(11_078, 11_078 + order_count), delivery_statuses, strict=True)
     )
     order_details = _order_details(
         rng,
@@ -198,9 +191,9 @@ def _validate_targets(targets: TargetCounts) -> None:
     ):
         if target < BASE_COUNTS[name]:
             raise ValueError(f"{name} target cannot be lower than the standard data")
-    if targets.orders > BASE_COUNTS["orders"] and (
-        targets.order_details - BASE_COUNTS["order_details"]
-    ) < (targets.orders - BASE_COUNTS["orders"]):
+    if targets.orders > BASE_COUNTS["orders"] and (targets.order_details - BASE_COUNTS["order_details"]) < (
+        targets.orders - BASE_COUNTS["orders"]
+    ):
         raise ValueError("every generated order requires at least one order detail")
 
 
@@ -236,15 +229,11 @@ def _product(product_id: int, rng: random.Random) -> dict[str, object]:
     }
 
 
-def _delivery_statuses(
-    order_count: int, rng: random.Random
-) -> list[Literal["on_time", "late", "unshipped"]]:
+def _delivery_statuses(order_count: int, rng: random.Random) -> list[Literal["on_time", "late", "unshipped"]]:
     on_time_count = order_count * 80 // 100
     late_count = order_count * 15 // 100
     statuses: list[Literal["on_time", "late", "unshipped"]] = (
-        ["on_time"] * on_time_count
-        + ["late"] * late_count
-        + ["unshipped"] * (order_count - on_time_count - late_count)
+        ["on_time"] * on_time_count + ["late"] * late_count + ["unshipped"] * (order_count - on_time_count - late_count)
     )
     rng.shuffle(statuses)
     return statuses
@@ -258,15 +247,11 @@ def _order(
 ) -> dict[str, object]:
     generated_customers = tuple(str(row["customer_id"]) for row in customers)
     customer_id = rng.choice(tuple(sorted(BASE_CUSTOMER_IDS)) + generated_customers)
-    order_date = _START_DATE + timedelta(
-        days=rng.randrange((_END_DATE - _START_DATE).days + 1)
-    )
+    order_date = _START_DATE + timedelta(days=rng.randrange((_END_DATE - _START_DATE).days + 1))
     required_date = order_date + timedelta(days=rng.randrange(7, 22))
     shipped_date: date | None
     if delivery_status == "on_time":
-        shipped_date = order_date + timedelta(
-            days=rng.randrange(1, (required_date - order_date).days + 1)
-        )
+        shipped_date = order_date + timedelta(days=rng.randrange(1, (required_date - order_date).days + 1))
     elif delivery_status == "late":
         shipped_date = required_date + timedelta(days=rng.randrange(1, 15))
     else:

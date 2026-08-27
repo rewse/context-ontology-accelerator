@@ -108,7 +108,9 @@ export class NorthwindDemoStack extends SCLStack {
       functionName: seedFunctionName,
       runtime: SEED_RUNTIME,
       handler: "index.handler",
-      code: lambda.Code.fromAsset(seedAssetPath()),
+      code: lambda.Code.fromAsset(seedAssetPath(), {
+        exclude: ["**/__pycache__/**"],
+      }),
       timeout: SEED_TIMEOUT,
       memorySize: SEED_MEMORY_MIB,
       logGroup: seedLogGroup,
