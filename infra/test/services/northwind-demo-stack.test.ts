@@ -285,6 +285,14 @@ describe("NorthwindDemoStack", () => {
         resource.Properties.LogGroupName ===
         "/aws/lambda/coa-dev-northwind-seed-provider",
     );
+    for (const logGroupId of [seedLogGroupId, providerLogGroupId]) {
+      expect(template.toJSON().Resources[logGroupId].DeletionPolicy).toBe(
+        "Delete",
+      );
+      expect(
+        template.toJSON().Resources[logGroupId].UpdateReplacePolicy,
+      ).toBe("Delete");
+    }
     const [seedFunctionId] = matchingResource(
       resources(template, "AWS::Lambda::Function"),
       (resource) => resource.Properties.Handler === "index.handler",

@@ -100,7 +100,7 @@ export class NorthwindDemoStack extends SCLStack {
     const seedFunctionName = this.prefixed(SEED_FUNCTION_NAME);
     const seedLogGroup = new logs.LogGroup(this, "SeedHandlerLogGroup", {
       logGroupName: `/aws/lambda/${seedFunctionName}`,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
     const seedRole = lambdaRole(this, "SeedHandlerRole");
     seedLogGroup.grantWrite(seedRole);
@@ -138,7 +138,7 @@ export class NorthwindDemoStack extends SCLStack {
     const providerFunctionName = this.prefixed(SEED_PROVIDER_FUNCTION_NAME);
     const providerLogGroup = new logs.LogGroup(this, "SeedProviderLogGroup", {
       logGroupName: `/aws/lambda/${providerFunctionName}`,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
     const providerRole = lambdaRole(this, "SeedProviderRole");
     providerLogGroup.grantWrite(providerRole);
