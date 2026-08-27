@@ -93,10 +93,6 @@ export class NorthwindDemoStack extends SCLStack {
       removalPolicy: cdk.RemovalPolicy.SNAPSHOT,
     });
     this.secret = this.cluster.secret!;
-    const writerResource = this.cluster.node
-      .findChild("Writer")
-      .node.findChild("Resource") as cdk.CfnResource;
-    writerResource.applyRemovalPolicy(cdk.RemovalPolicy.SNAPSHOT);
 
     cdk.Tags.of(this.cluster).add("created_by", "aurora-skill");
     cdk.Tags.of(this.cluster).add("generation_model", "gpt-5");
@@ -145,7 +141,7 @@ export class NorthwindDemoStack extends SCLStack {
     const providerRole = lambdaRole(this, "SeedProviderRole");
     providerLogGroup.grantWrite(providerRole);
     const provider = new cr.Provider(this, "SeedProvider", {
-      onEventHandler: seedHandler,
+      onEventHandler: providerOnEventHandler(seedHandler),
       frameworkOnEventRole: providerRole,
       logGroup: providerLogGroup,
       providerFunctionName,
@@ -199,6 +195,22 @@ function lambdaRole(scope: Construct, id: string): iam.Role {
   return new iam.Role(scope, id, {
     assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
   });
+}
+
+/**
+ * The provider only invokes the unqualified seed Lambda ARN. The Lambda grant
+ * helper also grants qualified ARN access, which this synchronous provider does not use.
+ */
+function providerOnEventHandler(handler: lambda.IFunction): lambda.IFunction {
+  return {
+    functionArn: handler.functionArn,
+    grantInvoke: (grantee: iam.IGrantable) =>
+      iam.Grant.addToPrincipal({
+        grantee,
+        actions: ["lambda:InvokeFunction"],
+        resourceArns: [handler.functionArn],
+      }),
+  } as unknown as lambda.IFunction;
 }
 
 function calculateSeedHash(inputs: SeedHashInputs): string {

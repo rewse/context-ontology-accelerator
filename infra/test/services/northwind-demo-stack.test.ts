@@ -21,24 +21,37 @@ type Resource = {
   Properties: Record<string, any>;
   UpdateReplacePolicy?: string;
 };
+type Resources = Record<string, Resource>;
+
+function resources(template: Template, type: string): Resources {
+  return template.findResources(type) as Resources;
+}
 
 function singleResource(template: Template, type: string): [string, Resource] {
-  const resources = template.findResources(type) as Record<string, Resource>;
-  expect(Object.entries(resources)).toHaveLength(1);
-  return Object.entries(resources)[0];
+  const matchingResources = resources(template, type);
+  expect(Object.entries(matchingResources)).toHaveLength(1);
+  return Object.entries(matchingResources)[0];
+}
+
+function matchingResource(
+  matchingResources: Resources,
+  predicate: (resource: Resource) => boolean,
+): [string, Resource] {
+  const match = Object.entries(matchingResources).find(([, resource]) =>
+    predicate(resource),
+  );
+  expect(match).toBeDefined();
+  return match!;
 }
 
 function lambdaRoleId(
   template: Template,
   predicate: (resource: Resource) => boolean,
 ): string {
-  const functions = template.findResources("AWS::Lambda::Function") as Record<
-    string,
-    Resource
-  >;
-  const [, lambda] = Object.entries(functions).find(([, resource]) =>
-    predicate(resource),
-  )!;
+  const [, lambda] = matchingResource(
+    resources(template, "AWS::Lambda::Function"),
+    predicate,
+  );
   return lambda.Properties.Role["Fn::GetAtt"][0];
 }
 
@@ -46,10 +59,7 @@ function statementsForRole(
   template: Template,
   roleId: string,
 ): Array<Record<string, any>> {
-  const policies = template.findResources("AWS::IAM::Policy") as Record<
-    string,
-    Resource
-  >;
+  const policies = resources(template, "AWS::IAM::Policy");
   return Object.values(policies)
     .filter((policy) =>
       policy.Properties.Roles.some(
@@ -65,6 +75,15 @@ function actions(statements: Array<Record<string, any>>): string[] {
       Array.isArray(statement.Action) ? statement.Action : [statement.Action],
     )
     .sort();
+}
+
+function stringsIn(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(stringsIn);
+  if (value && typeof value === "object") {
+    return Object.values(value).flatMap(stringsIn);
+  }
+  return [];
 }
 
 describe("NorthwindDemoStack", () => {
@@ -109,16 +128,16 @@ describe("NorthwindDemoStack", () => {
       }),
     );
     expect(
-      Object.keys(template.findResources("AWS::RDS::DBInstance")),
+      Object.keys(resources(template, "AWS::RDS::DBInstance")),
     ).toHaveLength(1);
 
-    for (const resourceType of [
-      "AWS::RDS::DBCluster",
-      "AWS::RDS::DBInstance",
-    ]) {
-      const [, resource] = singleResource(template, resourceType);
-      expect(resource.DeletionPolicy).toBe("Snapshot");
-      expect(resource.UpdateReplacePolicy).toBe("Snapshot");
+    const [, cluster] = singleResource(template, "AWS::RDS::DBCluster");
+    expect(cluster.DeletionPolicy).toBe("Snapshot");
+    expect(cluster.UpdateReplacePolicy).toBe("Snapshot");
+    const [, instance] = singleResource(template, "AWS::RDS::DBInstance");
+    expect(instance.DeletionPolicy).toBe("Delete");
+    expect(instance.UpdateReplacePolicy).toBe("Delete");
+    for (const resource of [cluster, instance]) {
       expect(resource.Properties.Tags).toEqual(
         expect.arrayContaining([
           { Key: "Component", Value: "northwind-demo" },
@@ -139,9 +158,7 @@ describe("NorthwindDemoStack", () => {
       expect(JSON.stringify(subnetId)).not.toContain("PublicSubnet");
     }
 
-    const ingressRules = template.findResources(
-      "AWS::EC2::SecurityGroupIngress",
-    ) as Record<string, Resource>;
+    const ingressRules = resources(template, "AWS::EC2::SecurityGroupIngress");
     expect(Object.values(ingressRules)).toHaveLength(1);
     const [ingressRule] = Object.values(ingressRules);
     expect(ingressRule.Properties).toMatchObject({
@@ -172,12 +189,10 @@ describe("NorthwindDemoStack", () => {
   });
 
   it("runs the complete seed asset through a bounded Python custom resource", () => {
-    const [seedFunctionId] = Object.entries(
-      template.findResources("AWS::Lambda::Function"),
-    ).find(
-      ([, resource]: [string, Resource]) =>
-        resource.Properties.Handler === "index.handler",
-    )!;
+    const [seedFunctionId] = matchingResource(
+      resources(template, "AWS::Lambda::Function"),
+      (resource) => resource.Properties.Handler === "index.handler",
+    );
     template.hasResourceProperties(
       "AWS::Lambda::Function",
       Match.objectLike({
@@ -258,26 +273,22 @@ describe("NorthwindDemoStack", () => {
       template,
       "AWS::SecretsManager::SecretTargetAttachment",
     );
-    const [seedLogGroupId] = Object.entries(
-      template.findResources("AWS::Logs::LogGroup"),
-    ).find(
-      ([, resource]: [string, Resource]) =>
+    const [seedLogGroupId] = matchingResource(
+      resources(template, "AWS::Logs::LogGroup"),
+      (resource) =>
         resource.Properties.LogGroupName ===
         "/aws/lambda/coa-dev-northwind-seed",
-    )!;
-    const [providerLogGroupId] = Object.entries(
-      template.findResources("AWS::Logs::LogGroup"),
-    ).find(
-      ([, resource]: [string, Resource]) =>
+    );
+    const [providerLogGroupId] = matchingResource(
+      resources(template, "AWS::Logs::LogGroup"),
+      (resource) =>
         resource.Properties.LogGroupName ===
         "/aws/lambda/coa-dev-northwind-seed-provider",
-    )!;
-    const [seedFunctionId] = Object.entries(
-      template.findResources("AWS::Lambda::Function"),
-    ).find(
-      ([, resource]: [string, Resource]) =>
-        resource.Properties.Handler === "index.handler",
-    )!;
+    );
+    const [seedFunctionId] = matchingResource(
+      resources(template, "AWS::Lambda::Function"),
+      (resource) => resource.Properties.Handler === "index.handler",
+    );
     const seedRoleId = lambdaRoleId(
       template,
       (resource) => resource.Properties.Handler === "index.handler",
@@ -336,9 +347,7 @@ describe("NorthwindDemoStack", () => {
         }),
         expect.objectContaining({
           Action: "lambda:InvokeFunction",
-          Resource: expect.arrayContaining([
-            { "Fn::GetAtt": [seedFunctionId, "Arn"] },
-          ]),
+          Resource: { "Fn::GetAtt": [seedFunctionId, "Arn"] },
         }),
         expect.objectContaining({
           Action: ["logs:CreateLogStream", "logs:PutLogEvents"],
@@ -347,13 +356,16 @@ describe("NorthwindDemoStack", () => {
       ]),
     );
 
-    const policyResources = [...seedStatements, ...providerStatements].flatMap(
-      (statement) =>
-        Array.isArray(statement.Resource)
-          ? statement.Resource
-          : [statement.Resource],
+    const policyResources = Object.values(
+      resources(template, "AWS::IAM::Policy"),
+    ).flatMap((policy) =>
+      policy.Properties.PolicyDocument.Statement.map(
+        (statement: Record<string, unknown>) => statement.Resource,
+      ),
     );
-    expect(policyResources).not.toContain("*");
+    expect(
+      stringsIn(policyResources).filter((value) => value.includes("*")),
+    ).toEqual([]);
     expect(actions([...seedStatements, ...providerStatements])).not.toContain(
       "logs:CreateLogGroup",
     );
