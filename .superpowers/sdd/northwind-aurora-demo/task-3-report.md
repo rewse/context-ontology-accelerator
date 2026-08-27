@@ -4,6 +4,7 @@
 
 - Implementation: `ea721401ad4418fad5a6f99c19349c4e4bb76c0e`
 - Review fix round 1: `945220913bf1427e70294c9b28b7ff3147dfd4c9`
+- Review fix round 2: `c05199edb2c34bfa4ff2eb0bf267f1310a6915c5`
 
 ## Changed files
 
@@ -39,7 +40,7 @@ The approved generated cluster master Secret and its ARN output remain the singl
 
 ## Review fix round 1
 
-- Applies `SNAPSHOT` as both `DeletionPolicy` and `UpdateReplacePolicy` to the DBCluster and writer DBInstance.
+- Applies `SNAPSHOT` as both `DeletionPolicy` and `UpdateReplacePolicy` to the DBCluster.
 - Precreates individual CloudWatch LogGroups for the seed handler and provider framework. Each Lambda uses an explicit role with only `logs:CreateLogStream` and `logs:PutLogEvents` on its own LogGroup ARN. The provider retains only its required scoped `lambda:GetFunction` and `lambda:InvokeFunction` permissions.
 - Refactors the seed hash into a pure test-only helper. Tests change every schema, data, generator, handler, and handler-configuration input independently.
 - Adds exact synthesized-template checks for database private subnet references, DBCluster and DBInstance tags, snapshot policies, output safety, custom-resource target ARNs, scoped IAM resources, and the absence of wildcard resources or `logs:CreateLogGroup` in seed/provider policies.
@@ -47,6 +48,20 @@ The approved generated cluster master Secret and its ARN output remain the singl
 ## Review fix round 1 evidence
 
 - Focused Jest using the shared dependency fallback: 6 passed.
+- Focused TypeScript check: passed.
+- Prettier check for the stack and focused test: passed.
+- `git diff --check`: passed before the review-fix commit.
+
+## Review fix round 2
+
+- Replaces narrow `findResources()` callback tuple annotations with typed resource helpers so standard ts-jest type-checking succeeds.
+- Keeps `SNAPSHOT` policies on the Aurora cluster. The writer DBInstance uses `Delete` for both policies because Aurora snapshots are cluster-level.
+- Uses a provider-handler adapter that grants `lambda:InvokeFunction` only on the unqualified seed Lambda ARN. It does not use the Lambda grant helper that adds a qualified-ARN wildcard.
+- Recursively checks every IAM policy resource value for wildcard characters, including suffixes nested in intrinsic-function structures.
+
+## Review fix round 2 evidence
+
+- Focused Jest with a temporary ts-jest configuration and full type checking: 6 passed.
 - Focused TypeScript check: passed.
 - Prettier check for the stack and focused test: passed.
 - `git diff --check`: passed before the review-fix commit.
