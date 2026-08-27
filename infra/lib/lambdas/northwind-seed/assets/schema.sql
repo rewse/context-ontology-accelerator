@@ -147,28 +147,28 @@ ALTER TABLE ONLY territories
 ALTER TABLE ONLY us_states
     ADD CONSTRAINT pk_usstates PRIMARY KEY (state_id);
 ALTER TABLE ONLY orders
-    ADD CONSTRAINT fk_orders_customers FOREIGN KEY (customer_id) REFERENCES customers;
+    ADD CONSTRAINT fk_orders_customers FOREIGN KEY (customer_id) REFERENCES customers DEFERRABLE INITIALLY DEFERRED;
 ALTER TABLE ONLY orders
-    ADD CONSTRAINT fk_orders_employees FOREIGN KEY (employee_id) REFERENCES employees;
+    ADD CONSTRAINT fk_orders_employees FOREIGN KEY (employee_id) REFERENCES employees DEFERRABLE INITIALLY DEFERRED;
 ALTER TABLE ONLY orders
-    ADD CONSTRAINT fk_orders_shippers FOREIGN KEY (ship_via) REFERENCES shippers;
+    ADD CONSTRAINT fk_orders_shippers FOREIGN KEY (ship_via) REFERENCES shippers DEFERRABLE INITIALLY DEFERRED;
 ALTER TABLE ONLY order_details
-    ADD CONSTRAINT fk_order_details_products FOREIGN KEY (product_id) REFERENCES products;
+    ADD CONSTRAINT fk_order_details_products FOREIGN KEY (product_id) REFERENCES products DEFERRABLE INITIALLY DEFERRED;
 ALTER TABLE ONLY order_details
-    ADD CONSTRAINT fk_order_details_orders FOREIGN KEY (order_id) REFERENCES orders;
+    ADD CONSTRAINT fk_order_details_orders FOREIGN KEY (order_id) REFERENCES orders DEFERRABLE INITIALLY DEFERRED;
 ALTER TABLE ONLY products
-    ADD CONSTRAINT fk_products_categories FOREIGN KEY (category_id) REFERENCES categories;
+    ADD CONSTRAINT fk_products_categories FOREIGN KEY (category_id) REFERENCES categories DEFERRABLE INITIALLY DEFERRED;
 ALTER TABLE ONLY products
-    ADD CONSTRAINT fk_products_suppliers FOREIGN KEY (supplier_id) REFERENCES suppliers;
+    ADD CONSTRAINT fk_products_suppliers FOREIGN KEY (supplier_id) REFERENCES suppliers DEFERRABLE INITIALLY DEFERRED;
 ALTER TABLE ONLY territories
-    ADD CONSTRAINT fk_territories_region FOREIGN KEY (region_id) REFERENCES region;
+    ADD CONSTRAINT fk_territories_region FOREIGN KEY (region_id) REFERENCES region DEFERRABLE INITIALLY DEFERRED;
 ALTER TABLE ONLY employee_territories
-    ADD CONSTRAINT fk_employee_territories_territories FOREIGN KEY (territory_id) REFERENCES territories;
+    ADD CONSTRAINT fk_employee_territories_territories FOREIGN KEY (territory_id) REFERENCES territories DEFERRABLE INITIALLY DEFERRED;
 ALTER TABLE ONLY employee_territories
-    ADD CONSTRAINT fk_employee_territories_employees FOREIGN KEY (employee_id) REFERENCES employees;
+    ADD CONSTRAINT fk_employee_territories_employees FOREIGN KEY (employee_id) REFERENCES employees DEFERRABLE INITIALLY DEFERRED;
 ALTER TABLE ONLY customer_customer_demo
-    ADD CONSTRAINT fk_customer_customer_demo_customer_demographics FOREIGN KEY (customer_type_id) REFERENCES customer_demographics;
+    ADD CONSTRAINT fk_customer_customer_demo_customer_demographics FOREIGN KEY (customer_type_id) REFERENCES customer_demographics DEFERRABLE INITIALLY DEFERRED;
 ALTER TABLE ONLY customer_customer_demo
-    ADD CONSTRAINT fk_customer_customer_demo_customers FOREIGN KEY (customer_id) REFERENCES customers;
+    ADD CONSTRAINT fk_customer_customer_demo_customers FOREIGN KEY (customer_id) REFERENCES customers DEFERRABLE INITIALLY DEFERRED;
 ALTER TABLE ONLY employees
-    ADD CONSTRAINT fk_employees_employees FOREIGN KEY (reports_to) REFERENCES employees;
+    ADD CONSTRAINT fk_employees_employees FOREIGN KEY (reports_to) REFERENCES employees DEFERRABLE INITIALLY DEFERRED;
