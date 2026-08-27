@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import importlib.util
+import json
 import re
 import sys
 from pathlib import Path
@@ -93,6 +95,7 @@ def test_changed_hash_reruns_schema_base_and_generated_phases(
     handler._applied_seed_hash = MagicMock(return_value="sha256-old")
     handler._reset_seed_tables = MagicMock()
     handler._run_sql_script = MagicMock()
+    handler._load_base_data = MagicMock()
     handler._load_generated_data = MagicMock()
     handler._record_seed_hash = MagicMock()
 
@@ -100,10 +103,8 @@ def test_changed_hash_reruns_schema_base_and_generated_phases(
 
     transaction_id = "transaction-1"
     handler._reset_seed_tables.assert_called_once_with(config, transaction_id)
-    assert handler._run_sql_script.call_args_list == [
-        ((config, "schema.sql", transaction_id),),
-        ((config, "base-data.sql", transaction_id),),
-    ]
+    handler._run_sql_script.assert_called_once_with(config, "schema.sql", transaction_id)
+    handler._load_base_data.assert_called_once_with(config, transaction_id)
     handler._load_generated_data.assert_called_once_with(config, transaction_id)
     handler._record_seed_hash.assert_called_once_with(config, transaction_id)
     handler._rds.commit_transaction.assert_called_once()
@@ -210,7 +211,7 @@ def test_transient_resume_error_is_retried(handler: ModuleType) -> None:
     handler._execute(_config(handler), "SELECT 1")
 
     assert handler._rds.execute_statement.call_count == 2
-    handler._sleep.assert_called_once_with(1)
+    handler._sleep.assert_called_once_with(2)
 
 
 @pytest.mark.parametrize(
@@ -229,10 +230,10 @@ def test_transient_error_stops_after_five_attempts(handler: ModuleType, code: st
 
     assert handler._rds.execute_statement.call_count == 5
     assert handler._sleep.call_args_list == [
-        ((1,),),
         ((2,),),
         ((4,),),
         ((8,),),
+        ((16,),),
     ]
 
 
@@ -286,6 +287,151 @@ def test_batching_stays_within_count_and_request_size_limits(handler: ModuleType
     assert len(calls) > 1
     for call in calls:
         request = call.kwargs
+        assert len(request["parameterSets"]) <= handler.MAX_BATCH_PARAMETER_SETS
+        assert handler._request_size_bytes(request) < handler.MAX_REQUEST_BYTES
+
+
+def test_request_size_uses_base64_wire_representation_for_blobs(handler: ModuleType) -> None:
+    request = {
+        "parameterSets": [
+            [
+                {
+                    "name": "picture",
+                    "value": {"blobValue": b"\x00\xff\x10"},
+                }
+            ]
+        ]
+    }
+    wire_request = {
+        "parameterSets": [
+            [
+                {
+                    "name": "picture",
+                    "value": {"blobValue": base64.b64encode(b"\x00\xff\x10").decode("ascii")},
+                }
+            ]
+        ]
+    }
+
+    assert handler._request_size_bytes(request) == len(json.dumps(wire_request, separators=(",", ":")).encode("utf-8"))
+
+
+def test_actual_base_asset_parses_all_rows_in_table_order(handler: ModuleType) -> None:
+    statements = handler._split_sql((_ASSETS_PATH / "base-data.sql").read_text())
+    parsed = [handler._parse_insert_statement(statement) for statement in statements]
+
+    assert all(row is not None for row in parsed)
+    groups: list[tuple[str, int]] = []
+    for row in parsed:
+        assert row is not None
+        table_name, _ = row
+        if groups and groups[-1][0] == table_name:
+            groups[-1] = (table_name, groups[-1][1] + 1)
+        else:
+            groups.append((table_name, 1))
+
+    assert sum(count for _, count in groups) == 3_362
+    assert groups == [
+        ("categories", 8),
+        ("customers", 91),
+        ("employees", 9),
+        ("employee_territories", 49),
+        ("order_details", 2_155),
+        ("orders", 830),
+        ("products", 77),
+        ("region", 4),
+        ("shippers", 6),
+        ("suppliers", 29),
+        ("territories", 53),
+        ("us_states", 51),
+    ]
+
+
+def test_actual_base_asset_preserves_representative_parameter_types(
+    handler: ModuleType,
+) -> None:
+    statements = handler._split_sql((_ASSETS_PATH / "base-data.sql").read_text())
+    parsed = [handler._parse_insert_statement(statement) for statement in statements]
+    rows = [row for row in parsed if row is not None]
+
+    categories = next(values for table, values in rows if table == "categories")
+    bon_app = next(values for table, values in rows if table == "customers" and values[0] == "BONAP")
+    order_detail = next(values for table, values in rows if table == "order_details")
+    employee = next(values for table, values in rows if table == "employees")
+
+    category_values = [parameter["value"] for parameter in handler._base_parameter_set("categories", categories)]
+    customer_values = [parameter["value"] for parameter in handler._base_parameter_set("customers", bon_app)]
+    order_detail_values = [
+        parameter["value"] for parameter in handler._base_parameter_set("order_details", order_detail)
+    ]
+    employee_values = [parameter["value"] for parameter in handler._base_parameter_set("employees", employee)]
+
+    assert category_values == [
+        {"longValue": 1},
+        {"stringValue": "Beverages"},
+        {"stringValue": "Soft drinks, coffees, teas, beers, and ales"},
+        {"blobValue": b""},
+    ]
+    assert customer_values[1] == {"stringValue": "Bon app'"}
+    assert customer_values[6] == {"isNull": True}
+    assert order_detail_values == [
+        {"longValue": 10248},
+        {"longValue": 11},
+        {"doubleValue": 14.0},
+        {"longValue": 12},
+        {"doubleValue": 0.0},
+    ]
+    assert employee_values[7] == {"stringValue": r"507 - 20th Ave. E.\nApt. 2A"}
+    assert employee_values[14] == {"blobValue": b""}
+
+
+def test_insert_parser_handles_commas_quotes_and_newlines(handler: ModuleType) -> None:
+    parsed = handler._parse_insert_statement("INSERT INTO notes VALUES (7, 2.5, NULL, 'first line\nsecond, O''Brien')")
+
+    assert parsed == (
+        "notes",
+        (7, 2.5, None, "first line\nsecond, O'Brien"),
+    )
+
+
+def test_non_insert_statements_flush_batches_and_execute_in_order(handler: ModuleType) -> None:
+    operations: list[tuple[str, str, int | None]] = []
+    handler._batch = MagicMock(
+        side_effect=lambda _config, sql, parameter_sets, _transaction_id: operations.append(
+            ("batch", sql, len(parameter_sets))
+        )
+    )
+    handler._execute = MagicMock(
+        side_effect=lambda _config, sql, *, transaction_id: operations.append(("execute", sql, None))
+    )
+
+    handler._run_base_data_statements(
+        _config(handler),
+        [
+            "INSERT INTO demo VALUES (1, 'first')",
+            "SELECT setval('demo_id_seq', 1)",
+            "INSERT INTO demo VALUES (2, 'second')",
+        ],
+        "transaction-1",
+    )
+
+    assert operations == [
+        ("batch", "INSERT INTO demo VALUES (:value_0, :value_1)", 1),
+        ("execute", "SELECT setval('demo_id_seq', 1)", None),
+        ("batch", "INSERT INTO demo VALUES (:value_0, :value_1)", 1),
+    ]
+
+
+def test_actual_base_asset_uses_fewer_than_thirty_data_api_calls(handler: ModuleType) -> None:
+    handler._load_base_data(_config(handler), "transaction-1")
+
+    calls = handler._rds.batch_execute_statement.call_args_list
+    assert 0 < len(calls) < 30
+    assert sum(len(call.kwargs["parameterSets"]) for call in calls) == 3_362
+    assert handler._rds.execute_statement.call_count == 0
+    for call in calls:
+        request = call.kwargs
+        assert len(request["sql"].encode("utf-8")) < handler.MAX_SQL_BYTES
         assert len(request["parameterSets"]) <= handler.MAX_BATCH_PARAMETER_SETS
         assert handler._request_size_bytes(request) < handler.MAX_REQUEST_BYTES
 

@@ -85,7 +85,7 @@ deploy-northwind-demo:
 	AWS_DEFAULT_REGION=us-east-1 AWS_REGION=us-east-1 \
 		pnpm --filter coa-infra exec cdk deploy coa-dev-northwind-demo \
 		--context env=dev --context enable_northwind_demo=true \
-		--require-approval never
+		--exclusively --require-approval never
 
 deploy-serve:
 	./scripts/deploy-serve.sh dev

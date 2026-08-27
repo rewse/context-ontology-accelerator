@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import re
@@ -31,6 +32,22 @@ TRANSIENT_CODES = frozenset(
 _rds = boto3.client("rds-data")
 _sleep = time.sleep
 _CREATE_TABLE_PATTERN = re.compile(r"^CREATE TABLE ([a-z_]+) ", re.MULTILINE)
+_FLOAT_LITERAL_PATTERN = re.compile(r"[+-]?(?:(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+)")
+_INSERT_VALUES_PATTERN = re.compile(
+    r"^INSERT\s+INTO\s+([a-z_][a-z0-9_]*)\s+VALUES\s*\((.*)\)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_INTEGER_LITERAL_PATTERN = re.compile(r"[+-]?\d+")
+
+_BASE_BLOB_COLUMN_INDEXES = {
+    "categories": frozenset({3}),
+    "employees": frozenset({14}),
+}
+_BASE_FLOAT_COLUMN_INDEXES = {
+    "order_details": frozenset({2, 4}),
+    "orders": frozenset({7}),
+    "products": frozenset({5}),
+}
 
 _TABLE_COLUMNS = {
     "customers": (
@@ -276,7 +293,19 @@ def _bounded_batches(
 
 
 def _request_size_bytes(request: dict[str, Any]) -> int:
-    return len(json.dumps(request, separators=(",", ":")).encode("utf-8"))
+    return len(
+        json.dumps(
+            request,
+            default=_json_wire_value,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+
+
+def _json_wire_value(value: object) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        return base64.b64encode(value).decode("ascii")
+    raise TypeError(f"Unsupported JSON request value: {type(value).__name__}")
 
 
 def _call_with_retry(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
@@ -287,7 +316,7 @@ def _call_with_retry(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
             code = error.response.get("Error", {}).get("Code")
             if code not in TRANSIENT_CODES or attempt == 4:
                 raise
-            _sleep(2**attempt)
+            _sleep(2 ** (attempt + 1))
     raise AssertionError("retry loop must return or raise")
 
 
@@ -296,7 +325,162 @@ def _create_schema(config: SeedConfig, transaction_id: str) -> None:
 
 
 def _load_base_data(config: SeedConfig, transaction_id: str) -> None:
-    _run_sql_script(config, "base-data.sql", transaction_id)
+    statements = _split_sql((ASSETS_PATH / "base-data.sql").read_text())
+    _run_base_data_statements(config, statements, transaction_id)
+
+
+def _run_base_data_statements(
+    config: SeedConfig,
+    statements: Iterable[str],
+    transaction_id: str,
+) -> None:
+    table_name: str | None = None
+    value_count = 0
+    parameter_sets: list[list[dict[str, Any]]] = []
+
+    for statement in statements:
+        parsed = _parse_insert_statement(statement)
+        if parsed is None:
+            _flush_base_insert_batch(
+                config,
+                table_name,
+                value_count,
+                parameter_sets,
+                transaction_id,
+            )
+            table_name = None
+            value_count = 0
+            parameter_sets = []
+            _execute(config, statement, transaction_id=transaction_id)
+            continue
+
+        next_table_name, values = parsed
+        if table_name is not None and next_table_name == table_name and len(values) != value_count:
+            raise ValueError(f"Inconsistent value count for base-data table {table_name}")
+        if table_name is not None and next_table_name != table_name:
+            _flush_base_insert_batch(
+                config,
+                table_name,
+                value_count,
+                parameter_sets,
+                transaction_id,
+            )
+            parameter_sets = []
+
+        table_name = next_table_name
+        value_count = len(values)
+        parameter_sets.append(_base_parameter_set(table_name, values))
+
+    _flush_base_insert_batch(
+        config,
+        table_name,
+        value_count,
+        parameter_sets,
+        transaction_id,
+    )
+
+
+def _flush_base_insert_batch(
+    config: SeedConfig,
+    table_name: str | None,
+    value_count: int,
+    parameter_sets: Sequence[list[dict[str, Any]]],
+    transaction_id: str,
+) -> None:
+    if table_name is None:
+        return
+    placeholders = ", ".join(f":value_{index}" for index in range(value_count))
+    _batch(
+        config,
+        f"INSERT INTO {table_name} VALUES ({placeholders})",
+        parameter_sets,
+        transaction_id,
+    )
+
+
+def _parse_insert_statement(statement: str) -> tuple[str, tuple[object, ...]] | None:
+    match = _INSERT_VALUES_PATTERN.fullmatch(statement.strip())
+    if match is None:
+        return None
+    table_name = match.group(1).lower()
+    values = tuple(_parse_sql_literal(literal) for literal in _split_insert_values(match.group(2)))
+    return table_name, values
+
+
+def _split_insert_values(values_sql: str) -> list[str]:
+    values: list[str] = []
+    current: list[str] = []
+    index = 0
+    in_quote = False
+    while index < len(values_sql):
+        char = values_sql[index]
+        if in_quote:
+            current.append(char)
+            if char == "'":
+                if values_sql[index + 1 : index + 2] == "'":
+                    current.append("'")
+                    index += 2
+                    continue
+                in_quote = False
+        elif char == "'":
+            current.append(char)
+            in_quote = True
+        elif char == ",":
+            values.append(_required_sql_literal(current))
+            current = []
+        else:
+            current.append(char)
+        index += 1
+    if in_quote:
+        raise ValueError("Unterminated string literal in base-data INSERT")
+    values.append(_required_sql_literal(current))
+    return values
+
+
+def _required_sql_literal(characters: Sequence[str]) -> str:
+    literal = "".join(characters).strip()
+    if not literal:
+        raise ValueError("Empty value in base-data INSERT")
+    return literal
+
+
+def _parse_sql_literal(literal: str) -> object:
+    if literal.upper() == "NULL":
+        return None
+    if literal.startswith("'") and literal.endswith("'"):
+        return literal[1:-1].replace("''", "'")
+    if _INTEGER_LITERAL_PATTERN.fullmatch(literal):
+        return int(literal)
+    if _FLOAT_LITERAL_PATTERN.fullmatch(literal):
+        return float(literal)
+    raise ValueError("Unsupported value in base-data INSERT")
+
+
+def _base_parameter_set(
+    table_name: str,
+    values: Sequence[object],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": f"value_{index}",
+            "value": _parameter_value(_base_parameter_value(table_name, index, value)),
+        }
+        for index, value in enumerate(values)
+    ]
+
+
+def _base_parameter_value(table_name: str, index: int, value: object) -> object:
+    if index in _BASE_BLOB_COLUMN_INDEXES.get(table_name, ()):
+        if value is None:
+            return None
+        if value != r"\x":
+            raise ValueError(f"Unsupported bytea literal for base-data table {table_name}")
+        return b""
+    if index in _BASE_FLOAT_COLUMN_INDEXES.get(table_name, ()) and value is not None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"Non-numeric value for base-data table {table_name}")
+        return float(value)
+    return value
 
 
 def _run_sql_script(config: SeedConfig, asset_name: str, transaction_id: str) -> None:
@@ -363,6 +547,8 @@ def _parameter_value(value: object) -> dict[str, object]:
         return {"stringValue": str(value), "typeHint": "DECIMAL"}
     if isinstance(value, str):
         return {"stringValue": value}
+    if isinstance(value, (bytes, bytearray)):
+        return {"blobValue": bytes(value)}
     raise TypeError(f"Unsupported RDS Data API parameter type: {type(value).__name__}")
 
 

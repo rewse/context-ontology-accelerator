@@ -32,6 +32,7 @@ def test_northwind_demo_deployment_documentation_matches_cdk_configuration() -> 
     assert "pnpm --filter coa-infra exec cdk deploy coa-dev-northwind-demo" in target
     assert "--context env=dev" in target
     assert f"--context {NORTHWIND_DEMO_CONTEXT}=true" in target
+    assert "--exclusively" in target
     assert "--require-approval never" in target
     assert "--all" not in target
     assert "deploy-serve:" not in target
