@@ -4,6 +4,7 @@
 
 - Implementation: `b02f3b1`
 - Review fix round 1: `3eb2f7b`
+- Review fix round 2: `96dd858`
 
 ## Changed files
 
@@ -51,4 +52,18 @@ The clean worktree lacks the generated OpenAPI assets and has missing workspace 
 - `uv run --no-project --with pytest pytest tests/unit/test_documentation_accuracy.py -q` passed: 8 passed. Pytest emitted one existing `asyncio_mode` configuration warning.
 - `make -n deploy-northwind-demo` printed only the expected single-stack deployment command.
 - `/Users/shibtats/git/context-ontology-accelerator/infra/node_modules/.bin/prettier --check infra/bin/app.ts infra/lib/constants.ts` passed.
+- `git diff --check` passed before the review-fix commit.
+
+## Review fix round 2
+
+- Removes the parent-checkout lookup, generated-asset symlink, temporary workspace, `NODE_PATH`, subprocess, and CDK list test from the documentation-accuracy suite.
+- Keeps the test static and self-contained. It now requires exactly one occurrence each of the strict context check, `NorthwindDemoStack` construction, stack ID, and network dependency.
+- Retains the target-anchored Make recipe extraction and the ordered documentation table-pair assertion. Enabled and disabled `cdk list` verification remains command-level evidence for Task 4 and Task 5.
+
+## Review fix round 2 evidence
+
+- `uv run --no-project --with pytest pytest tests/unit/test_documentation_accuracy.py -q` passed: 7 passed. Pytest emitted one existing `asyncio_mode` configuration warning.
+- `uv run --no-project --with ruff ruff format --check tests/unit/test_documentation_accuracy.py` passed.
+- `uv run --no-project --with ruff ruff check tests/unit/test_documentation_accuracy.py` passed.
+- `make -n deploy-northwind-demo` printed only the expected single-stack deployment command.
 - `git diff --check` passed before the review-fix commit.
