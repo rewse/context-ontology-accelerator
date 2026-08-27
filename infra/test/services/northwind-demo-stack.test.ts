@@ -4,7 +4,10 @@
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { NetworkStack } from "../../lib/stacks/foundation/network-stack";
-import { NorthwindDemoStack } from "../../lib/stacks/services";
+import {
+  northwindDemoStackTesting,
+  NorthwindDemoStack,
+} from "../../lib/stacks/services/northwind-demo-stack";
 
 const TEST_ENV = { account: "123456789012", region: "us-east-1" };
 const TEST_CONTEXT = {
@@ -12,6 +15,57 @@ const TEST_CONTEXT = {
   env: "dev",
   resource_prefix: "coa",
 };
+
+type Resource = {
+  DeletionPolicy?: string;
+  Properties: Record<string, any>;
+  UpdateReplacePolicy?: string;
+};
+
+function singleResource(template: Template, type: string): [string, Resource] {
+  const resources = template.findResources(type) as Record<string, Resource>;
+  expect(Object.entries(resources)).toHaveLength(1);
+  return Object.entries(resources)[0];
+}
+
+function lambdaRoleId(
+  template: Template,
+  predicate: (resource: Resource) => boolean,
+): string {
+  const functions = template.findResources("AWS::Lambda::Function") as Record<
+    string,
+    Resource
+  >;
+  const [, lambda] = Object.entries(functions).find(([, resource]) =>
+    predicate(resource),
+  )!;
+  return lambda.Properties.Role["Fn::GetAtt"][0];
+}
+
+function statementsForRole(
+  template: Template,
+  roleId: string,
+): Array<Record<string, any>> {
+  const policies = template.findResources("AWS::IAM::Policy") as Record<
+    string,
+    Resource
+  >;
+  return Object.values(policies)
+    .filter((policy) =>
+      policy.Properties.Roles.some(
+        (role: Record<string, string>) => role.Ref === roleId,
+      ),
+    )
+    .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+}
+
+function actions(statements: Array<Record<string, any>>): string[] {
+  return statements
+    .flatMap((statement) =>
+      Array.isArray(statement.Action) ? statement.Action : [statement.Action],
+    )
+    .sort();
+}
 
 describe("NorthwindDemoStack", () => {
   let template: Template;
@@ -33,6 +87,7 @@ describe("NorthwindDemoStack", () => {
         BackupRetentionPeriod: 7,
         DatabaseName: "northwind",
         DeletionProtection: true,
+        EnableCloudwatchLogsExports: ["postgresql"],
         EnableHttpEndpoint: true,
         EnableIAMDatabaseAuthentication: true,
         Engine: "aurora-postgresql",
@@ -56,39 +111,39 @@ describe("NorthwindDemoStack", () => {
     expect(
       Object.keys(template.findResources("AWS::RDS::DBInstance")),
     ).toHaveLength(1);
+
     for (const resourceType of [
       "AWS::RDS::DBCluster",
       "AWS::RDS::DBInstance",
     ]) {
-      template.hasResourceProperties(
-        resourceType,
-        Match.objectLike({
-          Tags: Match.arrayWith([
-            { Key: "created_by", Value: "aurora-skill" },
-            { Key: "generation_model", Value: "gpt-5" },
-          ]),
-        }),
+      const [, resource] = singleResource(template, resourceType);
+      expect(resource.DeletionPolicy).toBe("Snapshot");
+      expect(resource.UpdateReplacePolicy).toBe("Snapshot");
+      expect(resource.Properties.Tags).toEqual(
+        expect.arrayContaining([
+          { Key: "Component", Value: "northwind-demo" },
+          { Key: "Environment", Value: "dev" },
+          { Key: "Project", Value: "semantic-context" },
+          { Key: "created_by", Value: "aurora-skill" },
+          { Key: "generation_model", Value: "gpt-5" },
+        ]),
       );
     }
-    template.hasResourceProperties(
-      "AWS::RDS::DBCluster",
-      Match.objectLike({ EnableCloudwatchLogsExports: ["postgresql"] }),
-    );
-    template.hasResource("AWS::RDS::DBCluster", {
-      DeletionPolicy: "Snapshot",
-      Properties: Match.anyValue(),
-    });
   });
 
-  it("uses a dedicated database security group with connector-only PostgreSQL ingress", () => {
+  it("uses private-with-egress subnets and connector-only PostgreSQL ingress", () => {
+    const [, subnetGroup] = singleResource(template, "AWS::RDS::DBSubnetGroup");
+    expect(subnetGroup.Properties.SubnetIds).toHaveLength(2);
+    for (const subnetId of subnetGroup.Properties.SubnetIds) {
+      expect(JSON.stringify(subnetId)).toContain("PrivateSubnet");
+      expect(JSON.stringify(subnetId)).not.toContain("PublicSubnet");
+    }
+
     const ingressRules = template.findResources(
       "AWS::EC2::SecurityGroupIngress",
-    );
+    ) as Record<string, Resource>;
     expect(Object.values(ingressRules)).toHaveLength(1);
-    const [ingressRule] = Object.values(ingressRules) as Array<{
-      Properties: Record<string, unknown>;
-    }>;
-
+    const [ingressRule] = Object.values(ingressRules);
     expect(ingressRule.Properties).toMatchObject({
       FromPort: 5432,
       IpProtocol: "tcp",
@@ -100,84 +155,207 @@ describe("NorthwindDemoStack", () => {
     expect(JSON.stringify(ingressRule.Properties)).not.toContain("CidrIp");
   });
 
-  it("generates credentials without publishing a password", () => {
+  it("generates the approved cluster secret without publishing passwords", () => {
     template.hasResourceProperties(
       "AWS::SecretsManager::Secret",
       Match.objectLike({ GenerateSecretString: Match.anyValue() }),
     );
-    for (const outputName of [
-      "NorthwindClusterEndpoint",
-      "NorthwindDatabaseName",
-      "NorthwindPort",
-      "NorthwindSecretArn",
-    ]) {
-      template.hasOutput(outputName, Match.anyValue());
-    }
-    expect(Object.keys(template.toJSON().Outputs ?? []).sort()).toEqual([
+    const outputs = template.toJSON().Outputs ?? {};
+    expect(Object.keys(outputs).sort()).toEqual([
       "NorthwindClusterEndpoint",
       "NorthwindDatabaseName",
       "NorthwindPort",
       "NorthwindSecretArn",
     ]);
-    expect(JSON.stringify(template.toJSON().Outputs)).not.toMatch(/password/i);
+    expect(JSON.stringify(outputs)).not.toMatch(/password/i);
+    expect(JSON.stringify(outputs)).not.toContain("{{resolve:secretsmanager");
   });
 
   it("runs the complete seed asset through a bounded Python custom resource", () => {
+    const [seedFunctionId] = Object.entries(
+      template.findResources("AWS::Lambda::Function"),
+    ).find(
+      ([, resource]: [string, Resource]) =>
+        resource.Properties.Handler === "index.handler",
+    )!;
     template.hasResourceProperties(
       "AWS::Lambda::Function",
       Match.objectLike({
+        FunctionName: "coa-dev-northwind-seed",
         Handler: "index.handler",
         MemorySize: 1024,
         Runtime: "python3.12",
         Timeout: 900,
       }),
     );
-    template.hasResourceProperties(
+    const [, seed] = singleResource(
+      template,
       "AWS::CloudFormation::CustomResource",
-      Match.objectLike({
-        ClusterArn: Match.anyValue(),
-        DatabaseName: "northwind",
-        SeedHash: Match.stringLikeRegexp("^[a-f0-9]{64}$"),
-        SecretArn: Match.anyValue(),
-      }),
     );
+    expect(seed.Properties.ClusterArn).toBeDefined();
+    expect(seed.Properties.DatabaseName).toBe("northwind");
+    expect(seed.Properties.SeedHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(seed.Properties.SecretArn).toBeDefined();
+    expect(seed.Properties.ServiceToken).not.toEqual({ Ref: seedFunctionId });
   });
 
-  it("scopes seed permissions to the Northwind cluster and generated secret", () => {
-    const policies = template.findResources("AWS::IAM::Policy");
-    const statements = Object.values(policies).flatMap((policy: any) =>
-      policy.Properties.PolicyDocument.Statement.map(
-        (statement: any) => statement,
+  it("changes SeedHash for every seed input and handler configuration", () => {
+    const baseline = {
+      baseData: "base-data",
+      configuration: {
+        handler: "index.handler",
+        memorySize: 1024,
+        runtime: "python3.12",
+        timeoutSeconds: 900,
+      },
+      generator: "generator",
+      handler: "handler",
+      schema: "schema",
+    };
+    const hash = northwindDemoStackTesting.calculateSeedHash(baseline);
+    const changedInputs = [
+      { ...baseline, baseData: "changed-base-data" },
+      { ...baseline, generator: "changed-generator" },
+      { ...baseline, handler: "changed-handler" },
+      { ...baseline, schema: "changed-schema" },
+      {
+        ...baseline,
+        configuration: {
+          ...baseline.configuration,
+          handler: "changed.handler",
+        },
+      },
+      {
+        ...baseline,
+        configuration: { ...baseline.configuration, memorySize: 2048 },
+      },
+      {
+        ...baseline,
+        configuration: { ...baseline.configuration, runtime: "python3.13" },
+      },
+      {
+        ...baseline,
+        configuration: { ...baseline.configuration, timeoutSeconds: 901 },
+      },
+    ];
+
+    for (const changedInput of changedInputs) {
+      expect(
+        northwindDemoStackTesting.calculateSeedHash(changedInput),
+      ).not.toBe(hash);
+    }
+    expect(northwindDemoStackTesting.calculateSeedHash(baseline)).toBe(hash);
+  });
+
+  it("scopes seed and provider permissions to the synthesized resources", () => {
+    const [clusterId] = singleResource(template, "AWS::RDS::DBCluster");
+    const [, seed] = singleResource(
+      template,
+      "AWS::CloudFormation::CustomResource",
+    );
+    expect(JSON.stringify(seed.Properties.ClusterArn)).toContain(clusterId);
+    const [secretAttachmentId] = singleResource(
+      template,
+      "AWS::SecretsManager::SecretTargetAttachment",
+    );
+    const [seedLogGroupId] = Object.entries(
+      template.findResources("AWS::Logs::LogGroup"),
+    ).find(
+      ([, resource]: [string, Resource]) =>
+        resource.Properties.LogGroupName ===
+        "/aws/lambda/coa-dev-northwind-seed",
+    )!;
+    const [providerLogGroupId] = Object.entries(
+      template.findResources("AWS::Logs::LogGroup"),
+    ).find(
+      ([, resource]: [string, Resource]) =>
+        resource.Properties.LogGroupName ===
+        "/aws/lambda/coa-dev-northwind-seed-provider",
+    )!;
+    const [seedFunctionId] = Object.entries(
+      template.findResources("AWS::Lambda::Function"),
+    ).find(
+      ([, resource]: [string, Resource]) =>
+        resource.Properties.Handler === "index.handler",
+    )!;
+    const seedRoleId = lambdaRoleId(
+      template,
+      (resource) => resource.Properties.Handler === "index.handler",
+    );
+    const providerRoleId = lambdaRoleId(template, (resource) =>
+      resource.Properties.Description?.includes(
+        "AWS CDK resource provider framework",
       ),
     );
-    const dataApiStatement = statements.find((statement: any) => {
-      const actions = Array.isArray(statement.Action)
-        ? statement.Action
-        : [statement.Action];
-      return actions.includes("rds-data:ExecuteStatement");
-    });
-    const secretStatement = statements.find((statement: any) => {
-      const actions = Array.isArray(statement.Action)
-        ? statement.Action
-        : [statement.Action];
-      return actions.includes("secretsmanager:GetSecretValue");
-    });
+    const seedStatements = statementsForRole(template, seedRoleId);
+    const providerStatements = statementsForRole(template, providerRoleId);
 
-    expect(dataApiStatement).toMatchObject({
-      Action: [
-        "rds-data:BatchExecuteStatement",
-        "rds-data:BeginTransaction",
-        "rds-data:CommitTransaction",
-        "rds-data:ExecuteStatement",
-        "rds-data:RollbackTransaction",
-      ],
-      Effect: "Allow",
-    });
-    expect(dataApiStatement.Resource).not.toEqual("*");
-    expect(secretStatement).toMatchObject({
-      Action: "secretsmanager:GetSecretValue",
-      Effect: "Allow",
-    });
-    expect(secretStatement.Resource).not.toEqual("*");
+    expect(actions(seedStatements)).toEqual([
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "rds-data:BatchExecuteStatement",
+      "rds-data:BeginTransaction",
+      "rds-data:CommitTransaction",
+      "rds-data:ExecuteStatement",
+      "rds-data:RollbackTransaction",
+      "secretsmanager:GetSecretValue",
+    ]);
+    expect(actions(providerStatements)).toEqual([
+      "lambda:GetFunction",
+      "lambda:InvokeFunction",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+    ]);
+    expect(seedStatements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          Action: [
+            "rds-data:BatchExecuteStatement",
+            "rds-data:BeginTransaction",
+            "rds-data:CommitTransaction",
+            "rds-data:ExecuteStatement",
+            "rds-data:RollbackTransaction",
+          ],
+          Resource: seed.Properties.ClusterArn,
+        }),
+        expect.objectContaining({
+          Action: "secretsmanager:GetSecretValue",
+          Resource: { Ref: secretAttachmentId },
+        }),
+        expect.objectContaining({
+          Action: ["logs:CreateLogStream", "logs:PutLogEvents"],
+          Resource: { "Fn::GetAtt": [seedLogGroupId, "Arn"] },
+        }),
+      ]),
+    );
+    expect(providerStatements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          Action: "lambda:GetFunction",
+          Resource: { "Fn::GetAtt": [seedFunctionId, "Arn"] },
+        }),
+        expect.objectContaining({
+          Action: "lambda:InvokeFunction",
+          Resource: expect.arrayContaining([
+            { "Fn::GetAtt": [seedFunctionId, "Arn"] },
+          ]),
+        }),
+        expect.objectContaining({
+          Action: ["logs:CreateLogStream", "logs:PutLogEvents"],
+          Resource: { "Fn::GetAtt": [providerLogGroupId, "Arn"] },
+        }),
+      ]),
+    );
+
+    const policyResources = [...seedStatements, ...providerStatements].flatMap(
+      (statement) =>
+        Array.isArray(statement.Resource)
+          ? statement.Resource
+          : [statement.Resource],
+    );
+    expect(policyResources).not.toContain("*");
+    expect(actions([...seedStatements, ...providerStatements])).not.toContain(
+      "logs:CreateLogGroup",
+    );
   });
 });
