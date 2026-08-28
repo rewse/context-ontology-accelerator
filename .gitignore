@@ -53,6 +53,9 @@ smithy-generated/
 .DS_Store
 Thumbs.db
 
+# Local Git worktrees
+/.worktrees/
+
 # Environment
 .env
 .env.local
