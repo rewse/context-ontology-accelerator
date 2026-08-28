@@ -256,8 +256,59 @@ Run:
 
 ```bash
 \q
-test ! -f ~/.pgpass
-history | tail -20 | python3 -c 'import sys; from pathlib import Path; password = Path("/tmp/password.txt").read_text().strip(); raise SystemExit(bool(password and password in sys.stdin.read()))'
+HISTCONTROL_WAS_SET=${HISTCONTROL+x}
+HISTCONTROL_ORIGINAL=${HISTCONTROL-}
+HISTCONTROL=ignorespace
+export HISTCONTROL
+ history | tail -100 | awk '
+function is_history_inspection(line) {
+  return line ~ /history/ && line ~ /(awk|grep|python)/
+}
+BEGIN {
+  pgpassword_assignment = postgres_uri_credential = password_file_reference = 0
+  secret_file = "/tmp/" "password.txt"
+}
+!is_history_inspection($0) {
+  if ($0 ~ /(^|[[:space:];])PGPASSWORD=/) pgpassword_assignment = 1
+  if ($0 ~ /postgres(ql)?:\/\/[^[:space:]@:\/]+:[^@[:space:]]+@/) postgres_uri_credential = 1
+  if (index($0, secret_file)) password_file_reference = 1
+}
+END {
+  print "OPERATIONAL_PGPASSWORD_ASSIGNMENT=" (pgpassword_assignment ? "present" : "absent")
+  print "OPERATIONAL_POSTGRES_URI_CREDENTIAL=" (postgres_uri_credential ? "present" : "absent")
+  print "OPERATIONAL_PASSWORD_FILE_REFERENCE=" (password_file_reference ? "present" : "absent")
+  exit pgpassword_assignment || postgres_uri_credential || password_file_reference
+}'
+HISTORY_CHECK_STATUS=$?
+if [ "$HISTCONTROL_WAS_SET" = x ]; then
+  HISTCONTROL=$HISTCONTROL_ORIGINAL
+  export HISTCONTROL
+else
+  unset HISTCONTROL
+fi
+unset HISTCONTROL_ORIGINAL HISTCONTROL_WAS_SET
+CHECK_STATUS=0
+if [ -e "$HOME/.pgpass" ]; then
+  echo PGPASS_PRESENT
+  PGPASS_CHECK_STATUS=1
+  CHECK_STATUS=1
+else
+  echo PGPASS_ABSENT
+  PGPASS_CHECK_STATUS=0
+fi
+if [ "${PGPASSWORD+x}" = x ]; then
+  echo PGPASSWORD_PRESENT
+  PGPASSWORD_CHECK_STATUS=1
+  CHECK_STATUS=1
+else
+  echo PGPASSWORD_UNSET
+  PGPASSWORD_CHECK_STATUS=0
+fi
+if [ "$HISTORY_CHECK_STATUS" -ne 0 ]; then
+  CHECK_STATUS=1
+fi
+unset HISTORY_CHECK_STATUS PGPASS_CHECK_STATUS PGPASSWORD_CHECK_STATUS
+test "$CHECK_STATUS" -eq 0
 ```
 
-Expected: `.pgpass`が存在せず、recent shell historyにpasswordが含まれない。
+Expected: `PGPASS_ABSENT`、`PGPASSWORD_UNSET`、`OPERATIONAL_PGPASSWORD_ASSIGNMENT=absent`、`OPERATIONAL_POSTGRES_URI_CREDENTIAL=absent`、`OPERATIONAL_PASSWORD_FILE_REFERENCE=absent`が表示され、最後の`test`が成功する。確認コマンドは先頭スペースと一時的な`HISTCONTROL=ignorespace`で履歴への保存を避け、既知の履歴検査コマンドを除外して操作履歴だけを検査する。passwordの読み出し、表示、送信、shell historyの削除は行わない。
